@@ -78,18 +78,29 @@ export async function GET(request: NextRequest) {
 
       let status: string = 'available'
       const isExpired = now > expiresAt
-      const isCompleted = userStatus.completed_at !== null
-      const hasProgress = (userStatus.stream_progress_seconds || 0) > 0
+      
+      // Progress tracking - FIXED LOGIC
+      const progressSeconds = userStatus.stream_progress_seconds || 0
+      const taskEntry = Object.entries(tasks)[0] || ['UNKNOWN', {}]
+      const [, taskDetails] = taskEntry
+      const targetSeconds = (taskDetails as any)?.target || 900
+      const hasProgress = progressSeconds > 0
+      const isProgressComplete = progressSeconds >= targetSeconds
+      
+      // CORRECT completion detection (same fix as main endpoint)
+      const claimedReward = userStatus.is_claimed === true
+      const hasRealCompletionTimestamp = userStatus.completed_at && 
+                                        userStatus.completed_at > 0 && 
+                                        typeof userStatus.completed_at === 'number' &&
+                                        userStatus.completed_at > 1000000000000
+      const isCompleted = claimedReward || (hasRealCompletionTimestamp && isProgressComplete)
 
       if (isCompleted) status = 'completed'
       else if (isExpired) status = 'expired'
       else if (hasProgress) status = 'in_progress'
       else status = 'available'
 
-      const taskEntry = Object.entries(tasks)[0] || ['UNKNOWN', {}]
-      const [taskType, taskDetails] = taskEntry
-      const targetSeconds = (taskDetails as any)?.target || 900
-      const progressSeconds = userStatus.stream_progress_seconds || 0
+      const [taskType] = taskEntry
 
       return {
         id: quest.id,

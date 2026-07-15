@@ -55,12 +55,29 @@ export async function GET(request: NextRequest) {
         const expiresAt = new Date(config.expires_at)
         const startsAt = new Date(config.starts_at)
 
-        // Determine quest status
+        // Determine quest status - FIXED LOGIC
         let status: 'available' | 'in_progress' | 'completed' | 'expired' = 'available'
         const isExpired = now > expiresAt
-        const isCompleted = userStatus.completed_at !== null
-        const hasProgress = (userStatus.stream_progress_seconds || 0) > 0
-
+        
+        // Progress tracking
+        const progressSeconds = userStatus.stream_progress_seconds || 0
+        const taskEntry = Object.entries(tasks)[0]
+        const [, taskDetails] = taskEntry || ['UNKNOWN', {}]
+        const targetSeconds = (taskDetails as any)?.target || 900
+        const hasProgress = progressSeconds > 0
+        const isProgressComplete = progressSeconds >= targetSeconds
+        
+        // CORRECT completion detection:
+        // 1. Must have is_claimed = true (user actually claimed/rewarded)
+        // 2. OR must have 100% progress + completed_at is a real timestamp (not 0 or empty)
+        const claimedReward = userStatus.is_claimed === true
+        const hasRealCompletionTimestamp = userStatus.completed_at && 
+                                          userStatus.completed_at > 0 && 
+                                          typeof userStatus.completed_at === 'number' &&
+                                          userStatus.completed_at > 1000000000000 // Valid Unix timestamp (ms)
+        const isCompleted = claimedReward || (hasRealCompletionTimestamp && isProgressComplete)
+        
+        // Determine status with FIXED logic
         if (isCompleted) {
           status = 'completed'
         } else if (isExpired) {
@@ -71,11 +88,8 @@ export async function GET(request: NextRequest) {
           status = 'available'
         }
 
-        // Extract task info
-        const taskEntry = Object.entries(tasks)[0]
-        const [taskType, taskDetails] = taskEntry || ['UNKNOWN', {}]
-        const targetSeconds = (taskDetails as any)?.target || 900
-        const progressSeconds = userStatus.stream_progress_seconds || 0
+        // Extract task info (already extracted above for status calculation)
+        const [taskType] = taskEntry || ['UNKNOWN', {}]
         const progressPercent = Math.min((progressSeconds / targetSeconds) * 100, 100)
 
         return {
