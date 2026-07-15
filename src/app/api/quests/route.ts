@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getSessionToken } from '../token/route'
+import { getSessionToken } from '@/lib/session'
 
 // Mock quest data for educational/demo purposes
 // In a real scenario, this would come from Discord's internal quest APIs
@@ -38,7 +38,7 @@ function getMockQuests(): Array<{
     {
       id: 'quest_003',
       name: 'League of Legends Quest',
-      description: 'Summoner\'s Rift awaits! Play a match or practice tool for 15 minutes.',
+      description: "Summoner's Rift awaits! Play a match or practice tool for 15 minutes.",
       status: 'available',
       reward: 'LoL Icon + Blue Essence',
       totalTime: 15,
@@ -69,7 +69,7 @@ function getMockQuests(): Array<{
     {
       id: 'quest_006',
       name: 'GTA V Session',
-      description: 'Enter Los Santos and engage in gameplay for 15 minutes.',
+      description: "Enter Los Santos and engage in gameplay for 15 minutes.",
       status: 'expired',
       reward: 'GTA V In-Game Cash (Expired)',
       totalTime: 15,
@@ -145,9 +145,6 @@ export async function GET(request: NextRequest) {
 
     // Return mock quests combined with real Discord games info
     const quests = getMockQuests()
-    
-    // If we got real games, we could map them here
-    // For educational purposes, we'll use mock data with some randomization
     
     return NextResponse.json({
       success: true,

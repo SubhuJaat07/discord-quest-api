@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getSessionToken, getSessionUser } from '../token/route'
+import { getSessionToken, getSessionUser } from '@/lib/session'
 
 // Simulate quest completion process
 // In a real implementation, this would:
@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if quest already running for this session
-    for (const [key, quest] of activeQuests.entries()) {
+    for (const [, quest] of activeQuests.entries()) {
       if (quest.sessionId === sessionId && quest.status === 'running') {
         return NextResponse.json(
           { error: 'You already have a quest in progress. Please wait for it to complete.' },
@@ -103,7 +103,6 @@ export async function POST(request: NextRequest) {
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
-    const questSessionId = searchParams.get('questSessionId')
     const sessionId = searchParams.get('sessionId')
 
     if (!sessionId) {
@@ -122,7 +121,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    if (!activeQuest && !questSessionId) {
+    if (!activeQuest) {
       return NextResponse.json({
         success: true,
         status: 'idle',
@@ -132,13 +131,13 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      quest: activeQuest ? {
+      quest: {
         id: activeQuest.id,
         questId: activeQuest.questId,
         status: activeQuest.status,
         progress: Math.round(activeQuest.progress),
         elapsed: Math.round((Date.now() - activeQuest.startTime) / 1000)
-      } : null
+      }
     })
 
   } catch (error) {
@@ -151,7 +150,7 @@ export async function GET(request: NextRequest) {
 }
 
 // Simulate quest progression
-function startQuestSimulation(questSessionId: string, discordToken: string) {
+function startQuestSimulation(questSessionId: string, _discordToken: string) {
   const quest = activeQuests.get(questSessionId)
   if (!quest) return
 
