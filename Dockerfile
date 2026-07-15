@@ -6,27 +6,8 @@
 # Stage 1: Base with system dependencies
 FROM node:20-alpine AS base
 
-# Install Chromium dependencies (CORRECT Alpine package names!)
-RUN apk add --no-cache \
-    chromium \
-    nss \
-    freetype \
-    harfbuzz \
-    ca-certificates \
-    ttf-freefont \
-    fontconfig \
-    dbus \
-    ffmpeg \
-    # Correct Alpine names (NOT Debian names!)
-    mesa-gbm \        # libgbm in Debian
-    pango \            # libpango-1.0 in Debian
-    cairo \            # libcairo2 in Debian
-    alsa-lib \         # libasound2 in Debian
-    # X11 libraries
-    libxcomposite \
-    libxdamage \
-    libxfixes \
-    libxrandr
+# Install Chromium dependencies (Alpine package names)
+RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont fontconfig dbus ffmpeg mesa-gbm pango cairo alsa-lib libxcomposite libxdamage libxfixes libxrandr
 
 # Create non-root user early
 RUN addgroup --system --gid 1001 nodejs && \
@@ -52,24 +33,8 @@ RUN npm run build
 # ============================================
 FROM node:20-alpine AS runner
 
-# Install only minimal runtime deps for Chromium (Alpine compatible)
-RUN apk add --no-cache \
-    chromium \
-    nss \
-    freetype \
-    harfbuzz \
-    ca-certificates \
-    ttf-freefont \
-    fontconfig \
-    dbus \
-    mesa-gbm \
-    pango \
-    cairo \
-    alsa-lib \
-    libxcomposite \
-    libxdamage \
-    libxfixes \
-    libxrandr
+# Install minimal runtime deps for Chromium (single line, no comments)
+RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont fontconfig dbus mesa-gbm pango cairo alsa-lib libxcomposite libxdamage libxfixes libxrandr
 
 # Set environment variables for Puppeteer/Chromium
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
