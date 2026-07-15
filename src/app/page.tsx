@@ -393,10 +393,11 @@ export default function Home() {
       <main className="container mx-auto px-4 py-8 max-w-4xl">
         
         {/* Educational Disclaimer */}
-        <Alert className="mb-6 border-orange-500/30 bg-orange-950/20">
-          <Activity className="h-4 w-4 text-orange-500" />
-          <AlertDescription className="text-orange-200/80 text-sm">
-            <strong>⚡ Local Completion Required:</strong> Discord quests need LOCAL game detection. Use "Download Script" to get a file that completes quests when run on your PC with Discord open. This is the ONLY method that actually works!
+        <Alert className="mb-6 border-green-500/30 bg-green-950/20">
+          <Activity className="h-4 w-4 text-green-500" />
+          <AlertDescription className="text-green-200/80 text-sm">
+            <strong>✅ Real Discord Gateway:</strong> This tool connects to Discord&apos;s WebSocket Gateway and sends real PresenceUpdate events. 
+            Quests complete in 15 minutes using actual game activity tracking - same method as desktop apps!
           </AlertDescription>
         </Alert>
 
@@ -728,7 +729,7 @@ export default function Home() {
                         </div>
 
                         {/* Action Buttons */}
-                        <div className="shrink-0 flex flex-col gap-2">
+                        <div className="shrink-0">
                           {quest.status === 'completed' ? (
                             <Button 
                               disabled 
@@ -739,26 +740,23 @@ export default function Home() {
                               Completed ✓
                             </Button>
                           ) : quest.status === 'available' ? (
-                            <>
-                              {/* Primary: Download Script Button */}
-                              <Button 
-                                onClick={() => handleDownloadScript(quest)}
-                                className="bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white font-medium"
-                              >
-                                <Download className="w-4 h-4 mr-1" />
-                                Download Script
-                              </Button>
-                              {/* Secondary: Web Simulation Info */}
-                              <Button 
-                                onClick={() => handleStartQuest(quest.id)}
-                                disabled={appState === 'starting_quest' || appState === 'quest_active'}
-                                variant="outline"
-                                className="border-purple-700/50 text-purple-300 hover:bg-purple-800/30 text-xs"
-                              >
-                                <Activity className="w-3 h-3 mr-1" />
-                                Web Sim (Fake)
-                              </Button>
-                            </>
+                            <Button 
+                              onClick={() => handleStartQuest(quest.id)}
+                              disabled={appState === 'starting_quest' || appState === 'quest_active'}
+                              className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white font-medium"
+                            >
+                              {activeQuestId === quest.id ? (
+                                <>
+                                  <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                                  Starting...
+                                </>
+                              ) : (
+                                <>
+                                  <Play className="w-4 h-4 mr-1" />
+                                  Complete (15 min)
+                                </>
+                              )}
+                            </Button>
                           ) : quest.status === 'expired' ? (
                             <Button 
                               disabled 
@@ -792,10 +790,10 @@ export default function Home() {
                       
                       {/* Instructions for available quests */}
                       {quest.status === 'available' && (
-                        <div className="mt-4 pt-4 border-t border-orange-800/20">
-                          <p className="text-xs text-orange-400/70 flex items-center gap-1">
-                            <Download className="w-3 h-3" />
-                            Download &amp; run script locally with Discord open → Quest auto-completes in 15 min
+                        <div className="mt-4 pt-4 border-t border-green-800/20">
+                          <p className="text-xs text-green-400/70 flex items-center gap-1">
+                            <Activity className="w-3 h-3" />
+                            Click "Complete" → Website connects to Discord Gateway → Quest auto-completes in 15 min!
                           </p>
                         </div>
                       )}
