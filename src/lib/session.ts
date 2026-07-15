@@ -23,12 +23,28 @@ export function generateSessionId(): string {
 
 // Validate Discord token format (basic check)
 export function isValidTokenFormat(token: string): boolean {
-  // Discord user tokens are base64-like strings with dots
-  const parts = token.split('.')
+  // Discord user tokens are base64-like strings with dots (e.g., "base64.base64.base64")
+  // Format: UserID.Timestamp.HMAC
+  const trimmed = token.trim()
+  
+  // Must have exactly 2 dots (3 parts)
+  const parts = trimmed.split('.')
   if (parts.length !== 3) return false
   
-  // Each part should be reasonable length
-  return parts.every(part => part.length >= 10 && part.length >= 20)
+  // Each part should have reasonable length (Discord tokens vary in length)
+  // Part 1 (UserID): typically 18+ chars
+  // Part 2 (Timestamp): typically 10+ chars  
+  // Part 3 (HMAC): typically 6+ chars
+  const [userId, timestamp, hmac] = parts
+  
+  return (
+    userId.length >= 15 &&      // User ID portion
+    timestamp.length >= 6 &&    // Timestamp portion
+    hmac.length >= 6 &&         // HMAC hash portion
+    /^[a-zA-Z0-9_\-]+$/.test(userId) &&
+    /^[a-zA-Z0-9]+$/.test(timestamp) &&
+    /^[a-zA-Z0-9_\-]+$/.test(hmac)
+  )
 }
 
 // Create a new session
