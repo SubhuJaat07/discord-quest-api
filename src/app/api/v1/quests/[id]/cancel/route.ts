@@ -1,15 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyApiKey, hasPermission } from '@/lib/api-keys'
-import { getActiveQuests } from '../start/route'
+import { 
+  cancelChromiumSession, 
+  getChromiumSessionStatus,
+  getActiveSessions,
+  ChromiumQuestSession 
+} from '@/lib/chromium-client'
 
-// DELETE /api/v1/quests/:id/cancel - Cancel active quest
+// DELETE /api/v1/quests/:id/cancel - Cancel active Chromium quest session
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id: questId } = await params
+    const sessionParam = request.nextUrl.searchParams.get('session')
 
+    // Verify API key
     const apiKey = request.headers.get('x-api-key')
     if (!apiKey) {
       return NextResponse.json(
@@ -23,7 +30,7 @@ export async function DELETE(
       return NextResponse.json(keyCheck as any, { status: (keyCheck as any).status })
     }
 
-    const keyData = keyCheck as NonNullable<typeof keyCheck>
+    const keyData = keyCheck as NonNullable<typeof keyData>
 
     if (!hasPermission(keyData, 'quests:cancel')) {
       return NextResponse.json(
@@ -32,45 +39,135 @@ export async function DELETE(
       )
     }
 
-    // Find and mark quest for cancellation
-    const quests = getActiveQuests()
-    let cancelled = false
+    // If specific session ID provided, cancel that exact session
+    if (sessionParam) {
+      // Verify this session belongs to this user
+      const sessionStatus = getChromiumSessionStatus(sessionParam)
+      
+      if (!sessionStatus) {
+        return NextResponse.json(
+          { error: 'Session not found or already expired', code: 'SESSION_NOT_FOUND' },
+          { status: 404 }
+        )
+      }
+      
+      if ((sessionStatus.userId as string) !== keyData.user.id) {
+        return NextResponse.json(
+          { error: 'You can only cancel your own sessions', code: 'FORBIDDEN' },
+          { status: 403 }
+        )
+      }
+
+      // Check if session is already in a terminal state
+      const currentStatus = sessionStatus.status
+      if (['completed', 'error', 'cancelled'].includes(currentStatus || '')) {
+        return NextResponse.json({
+          success: false,
+          error: `Cannot cancel session - it is already ${currentStatus}`,
+          code: 'INVALID_STATE',
+          currentState: currentStatus,
+          hint: 'The session has already ended'
+        }, { status: 400 })
+      }
+
+      // Perform cancellation
+      const cancelled = await cancelChromiumSession(sessionParam)
+
+      if (!cancelled) {
+        return NextResponse.json(
+          { error: 'Failed to cancel session', code: 'CANCEL_FAILED' },
+          { status: 500 }
+        )
+      }
+
+      return NextResponse.json({
+        success: true,
+        sessionId: sessionParam,
+        questId,
+        status: 'cancelling',
+        message: '🛑 Quest cancellation initiated',
+        
+        whatHappens: [
+          'Browser is being closed',
+          'Presence updates are stopping',
+          'Session will be cleaned up shortly'
+        ],
+        
+        progressLost: {
+          elapsedSeconds: Math.floor((Date.now() - ((sessionStatus.startTime as number) || Date.now())) / 1000),
+          progressPercent: Math.round((sessionStatus.progress || 0) * 100) / 100,
+          note: 'This progress will NOT count toward quest completion'
+        },
+        
+        nextSteps: [
+          '✅ You can start a new quest immediately',
+          '📊 Use GET /api/v1/quests/:id/status to verify cancellation',
+          '🔄 Use POST /api/v1/quests/:id/start to start again'
+        ],
+        
+        warning: '⚠️ Any time accumulated during this session will not count toward quest completion. Discord requires continuous gameplay detection.'
+      })
+    }
+
+    // No session ID - find and cancel all active sessions for this user+quest
+    const activeSessionsMap = getActiveSessions()
+    const sessionsToCancel: string[] = []
     
-    for (const [, quest] of quests.entries()) {
-      if ((quest.questId === questId || quest.id === questId) && 
-          quest.userId === keyData.user.id &&
-          !['completed', 'failed', 'cancelled'].includes(quest.status)) {
-        quest.status = 'cancelled'
-        quest.phase = 'Cancelling...'
-        cancelled = true
-        break
+    for (const [, session] of activeSessionsMap.entries()) {
+      if (session.userId === keyData.user.id && 
+          (session.questId === questId || session.id === questId) &&
+          ['launching', 'authenticating', 'active', 'paused'].includes(session.status)) {
+        sessionsToCancel.push(session.id)
       }
     }
 
-    if (!cancelled) {
-      return NextResponse.json(
-        { error: 'No active quest found to cancel', code: 'NOT_FOUND' },
-        { status: 404 }
-      )
+    if (sessionsToCancel.length === 0) {
+      return NextResponse.json({
+        success: false,
+        error: 'No active sessions found to cancel',
+        code: 'NOT_FOUND',
+        questId,
+        suggestions: [
+          'All sessions may have already completed or been cancelled',
+          'Use ?session=<id> to target a specific session',
+          'Check status at GET /api/v1/quests/:id/status'
+        ]
+      }, { status: 404 })
     }
 
+    // Cancel all found sessions
+    const cancelResults = await Promise.allSettled(
+      sessionsToCancel.map(id => cancelChromiumSession(id))
+    )
+
+    const successfulCancels = cancelResults.filter(r => r.status === 'fulfilled' && r.value).length
+    
     return NextResponse.json({
-      success: true,
+      success: successfulCancels > 0,
       questId,
-      status: 'cancelling',
-      message: 'Quest cancellation requested',
-      note: 'The quest will stop within a few seconds',
-      warning: 'Any progress made will be lost',
+      sessionsAttempted: sessionsToCancel.length,
+      sessionsCancelled: successfulCancels,
+      status: successfulCancels > 0 ? 'cancelling' : 'partial_failure',
+      message: successfulCancels > 0 
+        ? `🛑 Cancelling ${successfulCancels} session(s)...`
+        : 'Failed to cancel sessions',
+      
+      cancelledSessions: sessionsToCancel.map((id, idx) => ({
+        sessionId: id,
+        status: cancelResults[idx].status === 'fulfilled' ? 'cancelling' : 'failed'
+      })),
+      
       nextSteps: [
-        'Check status at GET /api/v1/quests/:id/status',
-        'Restart with POST /api/v1/quests/:id/start if needed'
+        'Sessions are being cleaned up',
+        'Browser instances will close within seconds',
+        'You can start new quests immediately'
       ]
     })
 
   } catch (error) {
-    console.error('[V1 CANCEL] Error:', error)
+    console.error('[CHROMIUM CANCEL] Error:', error)
     return NextResponse.json(
-      { error: 'Failed to cancel quest', code: 'INTERNAL_ERROR' },
+      { error: 'Failed to cancel quest', code: 'INTERNAL_ERROR', details: error instanceof Error ? error.message : 'Unknown' },
       { status: 500 }
     )
   }

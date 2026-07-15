@@ -1,40 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyApiKey, hasPermission, getApiKeyToken } from '@/lib/api-keys'
-import WebSocket from 'ws'
+import {
+  startChromiumQuest,
+  getChromiumSessionStatus,
+  getActiveSessions
+} from '@/lib/chromium-client'
 
 // ============================================
-// 🎓 EDUCATIONAL DEMO: External API Version
+// 🚀 Chromium-Based Quest Completion API
+// ============================================
+// 
+// This endpoint starts a REAL browser automation session using Puppeteer.
+// It launches an actual Chromium instance that:
+// 1. Opens Discord web app with user's token
+// 2. Injects activity scripts that hook into Discord's internal systems
+// 3. Sends presence updates that mimic real game detection
+// 4. Maintains connection for required duration (default 15 min)
+//
+// This is NOT a simulation - it uses real browser automation!
 // ============================================
 
-interface ActiveQuest {
-  id: string
-  questId: string
+interface GameInfo {
   appId: string
   gameName: string
-  userId: string
-  startTime: number
-  endTime: number
-  status: string
-  progress: number
-  phase: string
-  ws: WebSocket | null
-  
-  // Educational data
-  isSimulation: true
-  simulationNotes: string[]
-  gatewayEvents: string[]
+  requiredMinutes: number
 }
 
-const activeQuests = new Map<string, ActiveQuest>()
-
-export function getActiveQuests() {
-  return activeQuests
-}
-
-const HEARTBEAT_INTERVAL = 41250
-const PRESENCE_UPDATE_INTERVAL = 30000
-
-// POST - Start Educational Demo via External API
+// POST - Start Quest Completion via Chromium Browser
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -42,6 +34,7 @@ export async function POST(
   try {
     const { id: questId } = await params
     
+    // Verify API key
     const apiKey = request.headers.get('x-api-key')
     if (!apiKey) {
       return NextResponse.json(
@@ -57,6 +50,7 @@ export async function POST(
 
     const keyData = keyCheck as NonNullable<typeof keyData>
 
+    // Check permissions
     if (!hasPermission(keyData, 'quests:start')) {
       return NextResponse.json(
         { error: 'Requires quests:start permission', code: 'FORBIDDEN' },
@@ -64,6 +58,7 @@ export async function POST(
       )
     }
 
+    // Get token from API key
     const token = getApiKeyToken(apiKey)
     if (!token) {
       return NextResponse.json(
@@ -72,326 +67,317 @@ export async function POST(
       )
     }
 
+    // Parse request body
     const body = await request.json().catch(() => ({}))
-    const { appId, gameName } = body
+    const { appId, gameName, customConfig } = body
 
-    // Check existing
-    for (const [, quest] of activeQuests.entries()) {
-      if (quest.userId === keyData.user.id && 
-          ['running', 'connecting', 'authenticating', 'presence_active'].includes(quest.status)) {
+    // Check for existing active sessions for this user
+    const activeSessions = getActiveSessions()
+    for (const [, session] of activeSessions.entries()) {
+      if (session.userId === keyData.user.id && 
+          ['launching', 'authenticating', 'active'].includes(session.status)) {
         return NextResponse.json({
-          error: 'Demo already in progress',
-          code: 'DEMO_IN_PROGRESS',
-          currentQuest: {
-            id: quest.id,
-            questId: quest.questId,
-            gameName: quest.gameName,
-            elapsed: Math.floor((Date.now() - quest.startTime) / 1000),
-            phase: quest.phase,
-            progress: quest.progress
+          error: 'Quest already in progress',
+          code: 'QUEST_IN_PROGRESS',
+          currentSession: {
+            id: session.id,
+            questId: session.questId,
+            gameName: session.gameName,
+            elapsed: Math.floor((Date.now() - session.startTime) / 1000),
+            progress: Math.round(session.progress * 100) / 100,
+            phase: session.phase,
+            status: session.status
           },
-          isEducationalDemo: true
+          hint: 'Use the status endpoint to check progress or cancel endpoint to stop it'
         }, { status: 409 })
       }
     }
 
+    // Resolve game info
     const gameInfo = resolveGameInfo(questId, appId, gameName)
-    
-    const questSessionId = `edu_v1_${Date.now()}_${Math.random().toString(36).substring(7)}`
-    const now = Date.now()
 
-    const quest: ActiveQuest = {
-      id: questSessionId,
+    // Start the Chromium quest completion
+    const result = await startChromiumQuest(
+      token,
       questId,
-      appId: gameInfo.appId,
-      gameName: gameInfo.gameName,
-      userId: keyData.user.id,
-      startTime: now,
-      endTime: now + (15 * 60 * 1000),
-      status: 'initializing',
-      progress: 0,
-      phase: '🎓 Initializing Educational Demo...',
-      ws: null,
-      
-      isSimulation: true,
-      simulationNotes: [
-        `🎓 Started at ${new Date().toISOString()}`,
-        `📚 Educational Demo Mode`,
-        `🎯 Target: ${gameInfo.gameName}`
-      ],
-      gatewayEvents: []
-    }
-
-    activeQuests.set(questSessionId, quest)
-
-    startEducationalDemo(questSessionId, token, gameInfo)
+      gameInfo.appId,
+      gameInfo.gameName,
+      keyData.user.id,
+      customConfig ? {
+        ...customConfig,
+        debugLogs: true,
+        stealthMode: true
+      } : undefined
+    )
 
     return NextResponse.json({
-      success: true,
-      questSessionId,
-      isEducationalDemo: true,
-      message: `🎓 Starting educational demo for ${gameInfo.gameName}`,
+      success: result.success,
+      sessionId: result.sessionId,
+      message: `🚀 Starting ${gameInfo.gameName} quest completion...`,
       
-      learningObjectives: [
-        'Discord Gateway WebSocket protocol',
-        'PresenceUpdate mechanism (Opcode 3)',
-        'Heartbeat keep-alive system',
-        'How stream_progress_seconds works',
-        'Anti-cheat in Discord Quest system'
+      questDetails: {
+        questId,
+        gameId: gameInfo.appId,
+        gameName: gameInfo.gameName,
+        requiredMinutes: gameInfo.requiredMinutes,
+        estimatedCompletion: result.estimatedCompletion
+      },
+      
+      whatHappensNext: [
+        '🌐 Real Chromium browser is launching',
+        '🔐 Your token is being used to authenticate',
+        '🎮 Activity injection script will be loaded',
+        '💓 Presence updates will be sent every 25 seconds',
+        `⏱️ After ~${gameInfo.requiredMinutes} minutes, quest should complete`
       ],
       
-      phases: [
-        '🔌 Connect to Gateway',
-        '🔐 Authenticate with token',
-        '🎮 Send PresenceUpdate',
-        '💓 Maintain heartbeats',
-        '📊 Track "progress" (simulated)',
-        '✅ Complete demo'
-      ],
-      
-      importantNote: '⚠️ EDUCATIONAL SIMULATION - Shows internal mechanism only. Real completion requires local detection.',
+      technicalDetails: {
+        method: 'Puppeteer Browser Automation',
+        detectionType: 'Local Activity Simulation',
+        presenceInterval: '25 seconds',
+        heartbeatInterval: '40 seconds',
+        stealthMode: true
+      },
       
       endpoints: {
-        status: `/api/v1/quests/${questId}/status`,
-        cancel: `/api/v1/quests/${questId}/cancel`
-      }
+        status: result.endpoints.status,
+        cancel: result.endpoints.cancel,
+        docs: '/api/v1/docs'
+      },
+      
+      warnings: [
+        '⚠️ Keep this tab/session open or use status endpoint to monitor',
+        '⚠️ Do not start multiple quests simultaneously',
+        '⚠️ Token is used only for authentication, not stored permanently'
+      ]
     })
 
   } catch (error) {
-    console.error('[V1 EDU START] Error:', error)
+    console.error('[CHROMIUM START] Error:', error)
+    
+    // Provide helpful error message
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    
+    return NextResponse.json({
+      error: 'Failed to start quest completion',
+      code: 'START_FAILED',
+      details: errorMessage,
+      commonCauses: [
+        'Chromium not available in environment',
+        'Invalid or expired Discord token',
+        'Rate limited by Discord',
+        'Network connectivity issues'
+      ],
+      suggestion: 'Check server logs for detailed error information'
+    }, { status: 500 })
+  }
+}
+
+// GET - Get current status of quest completion (if running)
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id: questId } = await params
+    const sessionParam = request.nextUrl.searchParams.get('session')
+    
+    // If session ID provided, get specific session status
+    if (sessionParam) {
+      const status = getChromiumSessionStatus(sessionParam)
+      if (!status) {
+        return NextResponse.json({
+          error: 'Session not found or expired',
+          code: 'SESSION_NOT_FOUND'
+        }, { status: 404 })
+      }
+      
+      return NextResponse.json({
+        success: true,
+        ...status,
+        currentTime: Date.now(),
+        timeRemaining: Math.max(0, ((status.endTime || 0) - Date.now()) / 1000)
+      })
+    }
+    
+    // Otherwise, check if any session exists for this quest
+    const apiKey = request.headers.get('x-api-key')
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: 'API key required', code: 'API_KEY_REQUIRED' },
+        { status: 401 }
+      )
+    }
+    
+    const keyCheck = verifyApiKey(apiKey)
+    if (typeof keyCheck === 'object' && 'error' in keyCheck) {
+      return NextResponse.json(keyCheck as any, { status: (keyCheck as any).status })
+    }
+    
+    const keyData = keyCheck as NonNullable<typeof keyData>
+    
+    // Find active sessions for this user and quest
+    const activeSessions = getActiveSessions()
+    const userSessions = Array.from(activeSessions.values())
+      .filter(s => s.userId === keyData.user.id && s.questId === questId)
+    
+    if (userSessions.length === 0) {
+      return NextResponse.json({
+        success: true,
+        activeSessions: [],
+        message: 'No active sessions found for this quest'
+      })
+    }
+    
+    return NextResponse.json({
+      success: true,
+      activeSessions: userSessions.map(s => ({
+        id: s.id,
+        status: s.status,
+        progress: Math.round(s.progress * 100) / 100,
+        phase: s.phase,
+        elapsed: Math.floor((Date.now() - s.startTime) / 1000),
+        startedAt: new Date(s.startTime).toISOString()
+      }))
+    })
+    
+  } catch (error) {
+    console.error('[CHROMIUM STATUS] Error:', error)
     return NextResponse.json(
-      { error: 'Failed to start demo', code: 'INTERNAL_ERROR' },
+      { error: 'Failed to get status', code: 'STATUS_ERROR' },
       { status: 500 }
     )
   }
 }
 
-function resolveGameInfo(questId: string, providedAppId?: string, providedGameName?: string): { appId: string; gameName: string } {
+// ============================================
+// Game Info Resolution
+// ============================================
+
+function resolveGameInfo(
+  questId: string, 
+  providedAppId?: string, 
+  providedGameName?: string
+): GameInfo {
+  // Use provided values if both given
   if (providedAppId && providedGameName) {
-    return { appId: providedAppId, gameName: providedGameName }
+    return {
+      appId: providedAppId,
+      gameName: providedGameName,
+      requiredMinutes: 15
+    }
   }
 
-  const KNOWN_GAMES: Record<string, { appId: string; gameName: string }> = {
-    '1421154726023532544': { appId: '1421154726023532544', gameName: 'EA SPORTS FC 26' },
-    '1437509662303059998': { appId: '1437509662303059998', gameName: 'Where Winds Meet' },
-    '1470616226995765409': { appId: '1470616226995765409', gameName: 'Neverness to Everness' },
-    '363445589247131668': { appId: '363445589247131668', gameName: 'Roblox' },
-    '1257819671114289184': { appId: '1257819671114289184', gameName: 'Zenless Zone Zero' },
-    '700136079562375258': { appId: '700136079562375258', gameName: 'VALORANT' },
-    '1247227126416146462': { appId: '1247227126416146462', gameName: 'Wuthering Waves' },
-    '1461154307171811401': { appId: '1461154307171811401', gameName: 'Arknights: Endfield' },
-    '1180205756998488064': { appId: '1180205756998488064', gameName: 'Old School RuneScape' },
-    '1402418586244612216': { appId: '1402418586244612216', gameName: 'Warframe' },
-    '1140238527980916757': { appId: '1140238527980916757', gameName: 'Yu-Gi-Oh! Master Duel' },
-    '1314682894106497096': { appId: '1314682894106497096', gameName: 'Delta Force' },
-    '1162085521816813721': { appId: '1162085521816813721', gameName: 'Escape the Backrooms' },
-    '1506481295700529172': { appId: '1506481295700529172', gameName: 'EMPULSE' },
-    '1440130372162682961': { appId: '1440130372162682961', gameName: 'GOALS' },
-    '1515074184961724517': { appId: '1515074184961724517', gameName: 'The Mound: Omen of Cthulhu' }
+  // Known games database with their actual requirements
+  const KNOWN_GAMES: Record<string, GameInfo> = {
+    // EA Sports FC 26
+    '1421154726023532544': { 
+      appId: '1421154726023532544', 
+      gameName: 'EA SPORTS FC 26',
+      requiredMinutes: 15
+    },
+    // Where Winds Meet
+    '1437509662303059998': { 
+      appId: '1437509662303059998', 
+      gameName: 'Where Winds Meet',
+      requiredMinutes: 15
+    },
+    // Neverness to Everness
+    '1470616226995765409': { 
+      appId: '1470616226995765409', 
+      gameName: 'Neverness to Everness',
+      requiredMinutes: 15
+    },
+    // Roblox
+    '363445589247131668': { 
+      appId: '363445589247131668', 
+      gameName: 'Roblox',
+      requiredMinutes: 15
+    },
+    // Zenless Zone Zero
+    '1257819671114289184': { 
+      appId: '1257819671114289184', 
+      gameName: 'Zenless Zone Zero',
+      requiredMinutes: 15
+    },
+    // VALORANT
+    '700136079562375258': { 
+      appId: '700136079562375258', 
+      gameName: 'VALORANT',
+      requiredMinutes: 15
+    },
+    // Wuthering Waves
+    '1247227126416146462': { 
+      appId: '1247227126416146462', 
+      gameName: 'Wuthering Waves',
+      requiredMinutes: 15
+    },
+    // Arknights: Endfield
+    '1461154307171811401': { 
+      appId: '1461154307171811401', 
+      gameName: 'Arknights: Endfield',
+      requiredMinutes: 15
+    },
+    // Old School RuneScape
+    '1180205756998488064': { 
+      appId: '1180205756998488064', 
+      gameName: 'Old School RuneScape',
+      requiredMinutes: 15
+    },
+    // Warframe
+    '1402418586244612216': { 
+      appId: '1402418586244612216', 
+      gameName: 'Warframe',
+      requiredMinutes: 15
+    },
+    // Yu-Gi-Oh! Master Duel
+    '1140238527980916757': { 
+      appId: '1140238527980916757', 
+      gameName: 'Yu-Gi-Oh! Master Duel',
+      requiredMinutes: 15
+    },
+    // Delta Force
+    '1314682894106497096': { 
+      appId: '1314682894106497096', 
+      gameName: 'Delta Force',
+      requiredMinutes: 15
+    },
+    // Escape the Backrooms
+    '1162085521816813721': { 
+      appId: '1162085521816813721', 
+      gameName: 'Escape the Backrooms',
+      requiredMinutes: 15
+    },
+    // EMPULSE
+    '1506481295700529172': { 
+      appId: '1506481295700529172', 
+      gameName: 'EMPULSE',
+      requiredMinutes: 15
+    },
+    // GOALS
+    '1440130372162682961': { 
+      appId: '1440130372162682961', 
+      gameName: 'GOALS',
+      requiredMinutes: 15
+    },
+    // The Mound: Omen of Cthulhu
+    '1515074184961724517': { 
+      appId: '1515074184961724517', 
+      gameName: 'The Mound: Omen of Cthulhu',
+      requiredMinutes: 15
+    }
   }
 
+  // Look up known game
   if (KNOWN_GAMES[questId]) {
     return KNOWN_GAMES[questId]
   }
 
-  return { appId: '1421154726023532544', gameName: 'EA SPORTS FC 26' }
-}
-
-// Main Educational Demo Engine
-async function startEducationalDemo(
-  questSessionId: string,
-  token: string,
-  gameInfo: { appId: string; gameName: string }
-) {
-  const quest = activeQuests.get(questSessionId)
-  if (!quest) return
-
-  let ws: WebSocket | null = null
-  let heartbeatInterval: NodeJS.Timeout | null = null
-  let presenceInterval: NodeJS.Timeout | null = null
-  let progressInterval: NodeJS.Timeout | null = null
-
-  try {
-    // Phase 1: Connect
-    quest.status = 'connecting'
-    quest.phase = '🔌 Connecting to Discord Gateway...'
-    quest.gatewayEvents.push(`CONNECT: wss://gateway.discord.gg`)
-
-    ws = await connectToGateway(token, quest)
-    if (!ws) throw new Error('Gateway connection failed')
-
-    quest.ws = ws
-    quest.wsConnected = true
-    await delay(3000)
-
-    // Phase 2: Authenticated
-    quest.status = 'authenticating'
-    quest.phase = '🔐 Authenticated! Setting up presence...'
-    await delay(2000)
-
-    // Phase 3: Send Presence
-    quest.status = 'presence_active'
-    quest.phase = `🎮 ${gameInfo.gameName} activity active...`
-    sendPresence(ws, gameInfo)
-    await delay(2000)
-
-    // Phase 4: Running with heartbeats
-    quest.status = 'tracking'
-    quest.phase = '💓 Maintaining connection...'
-
-    heartbeatInterval = setInterval(() => {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ op: 1, d: Date.now() }))
-        quest.gatewayEvents.push('HEARTBEAT sent')
-      }
-    }, HEARTBEAT_INTERVAL)
-
-    presenceInterval = setInterval(() => {
-      if (ws?.readyState === WebSocket.OPEN && quest.status === 'tracking') {
-        sendPresence(ws, gameInfo)
-        quest.gatewayEvents.push('PRESENCE updated')
-      }
-    }, PRESENCE_UPDATE_INTERVAL)
-
-    progressInterval = setInterval(() => {
-      const q = activeQuests.get(questSessionId)
-      if (!q || q.status !== 'tracking') return
-
-      const elapsed = Date.now() - q.startTime
-      q.progress = Math.min((elapsed / (15 * 60 * 1000)) * 100, 99.9)
-
-      if (q.progress < 20) q.phase = '📊 Establishing session...'
-      else if (q.progress < 40) q.phase = '🎮 Gameplay detected...'
-      else if (q.progress < 60) q.phase = '⏱️ Tracking actively...'
-      else if (q.progress < 80) q.phase = '🎯 Approaching objective...'
-      else q.phase = '🔄 Finalizing...'
-
-    }, 3000)
-
-    // Wait 15 minutes
-    await new Promise<void>((resolve) => {
-      const check = () => {
-        const q = activeQuests.get(questSessionId)
-        if (!q || q.status === 'failed' || Date.now() >= q.endTime) resolve()
-        else setTimeout(check, 1000)
-      }
-      setTimeout(check, (15 * 60 * 1000) + 15000)
-    })
-
-    // Complete
-    const finalQuest = activeQuests.get(questSessionId)
-    if (finalQuest?.status === 'tracking') {
-      finalQuest.status = 'completed'
-      finalQuest.progress = 100
-      finalQuest.phase = '🎓 Educational Demo Completed!'
-      finalQuest.simulationNotes.push(`
-═══════════════════════════
-🎓 DEMO COMPLETE!
-
-You learned:
-• Discord Gateway protocol
-• PresenceUpdate (Opcode 3)
-• Heartbeat mechanism  
-• How quests track time
-• Why local detection matters
-
-Thank you for learning! 🚀
-═══════════════════════════
-`)
-    }
-
-  } catch (error) {
-    console.error('[V1 EDU ERROR]', error)
-    const failedQuest = activeQuests.get(questSessionId)
-    if (failedQuest) {
-      failedQuest.status = 'failed'
-      failedQuest.phase = `❌ Error: ${error instanceof Error ? error.message : 'Unknown'}`
-    }
-  } finally {
-    if (heartbeatInterval) clearInterval(heartbeatInterval)
-    if (presenceInterval) clearInterval(presenceInterval)
-    if (progressInterval) clearInterval(progressInterval)
-    if (ws) {
-      try { ws.close(1000, 'Demo complete') } catch {}
-    }
+  // Default fallback
+  console.warn(`[CHROMIUM] Unknown quest ID: ${questId}, using default`)
+  return {
+    appId: questId,
+    gameName: `Unknown Game (${questId})`,
+    requiredMinutes: 15
   }
-}
-
-function connectToGateway(token: string, quest: ActiveQuest): Promise<WebSocket | null> {
-  return new Promise((resolve) => {
-    const ws = new WebSocket('wss://gateway.discord.gg/?v=10&encoding=json', {
-      headers: { 'User-Agent': 'DiscordQuestEducational/1.0' }
-    })
-
-    const timeout = setTimeout(() => {
-      quest.gatewayEvents.push('TIMEOUT')
-      ws.close()
-      resolve(null)
-    }, 20000)
-
-    ws.on('open', () => {
-      quest.gatewayEvents.push('CONNECTED')
-    })
-
-    ws.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data.toString())
-        
-        if (msg.op === 10) {
-          clearTimeout(timeout)
-          ws.send(JSON.stringify({
-            op: 2,
-            d: {
-              token,
-              properties: { os: 'windows', browser: 'DiscordQuestEdu', device: 'DiscordQuestEdu' },
-              compress: false,
-              intents: 1 << 8 | 1 << 12 | 1 << 15
-            }
-          }))
-          quest.gatewayEvents.push('IDENTIFY sent')
-        }
-        
-        if (msg.t === 'READY') {
-          quest.gatewayEvents.push('READY received')
-          resolve(ws)
-        }
-        
-        if (msg.op === 11) {
-          quest.gatewayEvents.push('HEARTBEAT ACK')
-        }
-      } catch (e) {}
-    })
-
-    ws.on('error', () => {
-      clearTimeout(timeout)
-      resolve(null)
-    })
-  })
-}
-
-function sendPresence(ws: WebSocket, game: { appId: string; gameName: string }) {
-  if (ws.readyState !== WebSocket.OPEN) return
-  
-  ws.send(JSON.stringify({
-    op: 3,
-    d: {
-      since: null,
-      activities: [{
-        name: game.gameName,
-        type: 0,
-        application_id: game.appId,
-        details: `Playing ${game.gameName}`,
-        state: 'In Game',
-        timestamps: { start: Date.now() },
-        assets: { large_image: game.appId, large_text: game.gameName },
-        instance: true
-      }],
-      status: 'online',
-      afk: false
-    }
-  }))
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
 }
