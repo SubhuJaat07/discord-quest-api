@@ -2,9 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import {
   isValidTokenFormat,
   createSession,
-  deleteSession
+  setSessionCookies,
+  clearSession,
+  SESSION_COOKIE_NAME,
+  TOKEN_COOKIE_NAME
 } from '@/lib/session'
 
+// POST - Login with Discord token (sets persistent cookies!)
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -27,36 +31,34 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify token by calling Discord API
-    // Discord user tokens use direct Authorization (no Bearer prefix)
     let userInfo
     try {
       const response = await fetch('https://discord.com/api/v10/users/@me', {
         headers: {
           'Authorization': trimmedToken,
           'Content-Type': 'application/json',
-          'User-Agent': 'DiscordQuestTool/1.0 (Educational)'
+          'User-Agent': 'DiscordQuestTool/2.0 (Chromium Edition)'
         }
       })
 
       if (!response.ok) {
-        // Log for debugging (don't expose to client)
         console.error('Discord API error:', response.status, response.statusText)
         
         if (response.status === 401) {
           return NextResponse.json(
-            { error: 'Token verification failed. Make sure you copied the complete token from Discord DevTools (F12 → Application → Local Storage).' },
+            { error: 'Token verification failed. Copy complete token from DevTools (F12 → Application → Local Storage).' },
             { status: 401 }
           )
         }
         if (response.status === 403) {
           return NextResponse.json(
-            { error: 'Token blocked. Your account might be locked or token revoked.' },
+            { error: 'Token blocked. Account might be locked or token revoked.' },
             { status: 403 }
           )
         }
         if (response.status === 429) {
           return NextResponse.json(
-            { error: 'Rate limited. Please wait a moment and try again.' },
+            { error: 'Rate limited. Please wait and try again.' },
             { status: 429 }
           )
         }
@@ -67,12 +69,12 @@ export async function POST(request: NextRequest) {
     } catch (error) {
       console.error('Discord API error:', error)
       return NextResponse.json(
-        { error: 'Failed to connect to Discord. Please check your internet connection.' },
+        { error: 'Failed to connect to Discord. Check internet connection.' },
         { status: 502 }
       )
     }
 
-    // Create session - store token securely in memory only
+    // Create session
     const sessionId = createSession(trimmedToken, {
       username: userInfo.username,
       discriminator: userInfo.discriminator,
@@ -80,17 +82,43 @@ export async function POST(request: NextRequest) {
       id: userInfo.id
     })
 
-    // Return session info WITHOUT the actual token
-    return NextResponse.json({
+    // 🍪 SET COOKIES - This is the KEY FIX!
+    // Cookies persist across redeployments!
+    await setSessionCookies(sessionId, trimmedToken, {
+      username: userInfo.username,
+      discriminator: userInfo.discriminator,
+      avatar: userInfo.avatar,
+      id: userInfo.id
+    })
+
+    console.log(`[TOKEN] User ${userInfo.username} logged in - cookies set!`)
+
+    // Return success WITH cookies set
+    const response = NextResponse.json({
       success: true,
       sessionId,
       user: {
         username: userInfo.username,
         discriminator: userInfo.discriminator,
-        id: userInfo.id
+        id: userInfo.id,
+        avatar: userInfo.avatar
       },
-      message: 'Authentication successful'
+      message: '✅ Login successful! Token saved securely.',
+      cookieInfo: {
+        sessionCookie: SESSION_COOKIE_NAME,
+        tokenCookie: TOKEN_COOKIE_NAME,
+        expiresIn: '7 days',
+        survivesRedeploy: true
+      },
+      features: [
+        '🔒 Token stored in httpOnly cookies',
+        '♻️ Survives server restarts/redeploys',
+        '⏰ Valid for 7 days',
+        '🚀 Ready to start quests!'
+      ]
     })
+
+    return response
 
   } catch (error) {
     console.error('Token API error:', error)
@@ -101,23 +129,78 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// DELETE endpoint to clear session
-export async function DELETE(request: NextRequest) {
+// GET - Check current login status (reads cookies)
+export async function GET() {
   try {
-    const { searchParams } = new URL(request.url)
-    const sessionId = searchParams.get('sessionId')
-
-    if (sessionId && deleteSession(sessionId)) {
-      return NextResponse.json({ success: true, message: 'Session cleared' })
+    const { getSessionFromRequest } = await import('@/lib/session')
+    const session = await getSessionFromRequest()
+    
+    if (session && session.token) {
+      // Verify token still works
+      const response = await fetch('https://discord.com/api/v10/users/@me', {
+        headers: {
+          'Authorization': session.token,
+          'User-Agent': 'DiscordQuestTool/2.0'
+        }
+      })
+      
+      if (response.ok) {
+        const user = await response.json()
+        return NextResponse.json({
+          loggedIn: true,
+          user: {
+            username: user.username,
+            discriminator: user.discriminator,
+            id: user.id,
+            avatar: user.avatar
+          },
+          sessionId: session.sessionId,
+          message: '✅ You are logged in!',
+          cookieStatus: {
+            hasSessionCookie: true,
+            hasTokenCookie: true,
+            readyForQuests: true
+          }
+        })
+      } else {
+        // Token expired or invalid
+        return NextResponse.json({
+          loggedIn: false,
+          error: 'Token expired or invalid',
+          suggestion: 'Please login again'
+        })
+      }
     }
+    
+    return NextResponse.json({
+      loggedIn: false,
+      message: 'Not logged in',
+      suggestion: 'POST your Discord token to /api/token'
+    })
+    
+  } catch (error) {
+    return NextResponse.json({
+      loggedIn: false,
+      error: 'Failed to check status'
+    }, { status: 500 })
+  }
+}
 
-    return NextResponse.json(
-      { error: 'Invalid session' },
-      { status: 400 }
-    )
+// DELETE - Logout (clear cookies)
+export async function DELETE() {
+  try {
+    await clearSession()
+    
+    const response = NextResponse.json({
+      success: true,
+      message: 'Logged out successfully. Cookies cleared.'
+    })
+    
+    return response
+    
   } catch (error) {
     return NextResponse.json(
-      { error: 'Failed to clear session' },
+      { error: 'Failed to logout' },
       { status: 500 }
     )
   }
