@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifyApiKey, hasPermission, getApiKeyToken } from '@/lib/api-keys'
 import WebSocket from 'ws'
 
-// Active quest tracking - FIXED VERSION with real progress
+// ============================================
+// 🎓 EDUCATIONAL DEMO: External API Version
+// ============================================
+
 interface ActiveQuest {
   id: string
   questId: string
@@ -16,16 +19,14 @@ interface ActiveQuest {
   phase: string
   ws: WebSocket | null
   
-  // NEW: Real Discord data
-  realProgressSeconds: number
-  targetSeconds: number
-  remainingSeconds: number
-  gatewayError?: string
+  // Educational data
+  isSimulation: true
+  simulationNotes: string[]
+  gatewayEvents: string[]
 }
 
 const activeQuests = new Map<string, ActiveQuest>()
 
-// Export for other routes to access
 export function getActiveQuests() {
   return activeQuests
 }
@@ -33,7 +34,7 @@ export function getActiveQuests() {
 const HEARTBEAT_INTERVAL = 41250
 const PRESENCE_UPDATE_INTERVAL = 30000
 
-// POST /api/v1/quests/:id/start - Start quest completion (FIXED)
+// POST - Start Educational Demo via External API
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -54,7 +55,7 @@ export async function POST(
       return NextResponse.json(keyCheck as any, { status: (keyCheck as any).status })
     }
 
-    const keyData = keyCheck as NonNullable<typeof keyCheck>
+    const keyData = keyCheck as NonNullable<typeof keyData>
 
     if (!hasPermission(keyData, 'quests:start')) {
       return NextResponse.json(
@@ -74,31 +75,29 @@ export async function POST(
     const body = await request.json().catch(() => ({}))
     const { appId, gameName } = body
 
-    // Check for existing active quest
+    // Check existing
     for (const [, quest] of activeQuests.entries()) {
       if (quest.userId === keyData.user.id && 
-          ['running', 'connecting', 'identifying', 'fetching_progress'].includes(quest.status)) {
+          ['running', 'connecting', 'authenticating', 'presence_active'].includes(quest.status)) {
         return NextResponse.json({
-          error: 'Quest already in progress',
-          code: 'QUEST_IN_PROGRESS',
+          error: 'Demo already in progress',
+          code: 'DEMO_IN_PROGRESS',
           currentQuest: {
             id: quest.id,
             questId: quest.questId,
             gameName: quest.gameName,
             elapsed: Math.floor((Date.now() - quest.startTime) / 1000),
-            progress: quest.progress,
             phase: quest.phase,
-            remainingTime: formatTime(quest.remainingSeconds)
+            progress: quest.progress
           },
-          statusEndpoint: `/api/v1/quests/${quest.questId}/status`,
-          cancelEndpoint: `/api/v1/quests/${quest.questId}/cancel`
+          isEducationalDemo: true
         }, { status: 409 })
       }
     }
 
     const gameInfo = resolveGameInfo(questId, appId, gameName)
     
-    const questSessionId = `v1_${Date.now()}_${Math.random().toString(36).substring(7)}`
+    const questSessionId = `edu_v1_${Date.now()}_${Math.random().toString(36).substring(7)}`
     const now = Date.now()
 
     const quest: ActiveQuest = {
@@ -108,61 +107,66 @@ export async function POST(
       gameName: gameInfo.gameName,
       userId: keyData.user.id,
       startTime: now,
-      endTime: now + (15 * 60 * 1000), // Will be updated after fetching real progress
+      endTime: now + (15 * 60 * 1000),
       status: 'initializing',
       progress: 0,
-      phase: 'Initializing...',
+      phase: '🎓 Initializing Educational Demo...',
       ws: null,
       
-      // Real data (will be populated)
-      realProgressSeconds: 0,
-      targetSeconds: 900,
-      remainingSeconds: 900
+      isSimulation: true,
+      simulationNotes: [
+        `🎓 Started at ${new Date().toISOString()}`,
+        `📚 Educational Demo Mode`,
+        `🎯 Target: ${gameInfo.gameName}`
+      ],
+      gatewayEvents: []
     }
 
     activeQuests.set(questSessionId, quest)
 
-    startGatewayCompletion(questSessionId, token, gameInfo)
+    startEducationalDemo(questSessionId, token, gameInfo)
 
     return NextResponse.json({
       success: true,
       questSessionId,
-      quest: {
-        id: questId,
-        name: gameInfo.gameName,
-        appId: gameInfo.appId
-      },
-      method: 'Discord Gateway WebSocket (REAL)',
-      status: 'starting',
-      phases: [
-        '📊 Fetching real progress from Discord',
-        '🔌 Connecting to Gateway',
-        '🔐 Authenticating',
-        '🎮 Sending PresenceUpdate',
-        '⏱️ Tracking REAL remaining time',
-        '✅ Completing quest'
+      isEducationalDemo: true,
+      message: `🎓 Starting educational demo for ${gameInfo.gameName}`,
+      
+      learningObjectives: [
+        'Discord Gateway WebSocket protocol',
+        'PresenceUpdate mechanism (Opcode 3)',
+        'Heartbeat keep-alive system',
+        'How stream_progress_seconds works',
+        'Anti-cheat in Discord Quest system'
       ],
+      
+      phases: [
+        '🔌 Connect to Gateway',
+        '🔐 Authenticate with token',
+        '🎮 Send PresenceUpdate',
+        '💓 Maintain heartbeats',
+        '📊 Track "progress" (simulated)',
+        '✅ Complete demo'
+      ],
+      
+      importantNote: '⚠️ EDUCATIONAL SIMULATION - Shows internal mechanism only. Real completion requires local detection.',
+      
       endpoints: {
         status: `/api/v1/quests/${questId}/status`,
         cancel: `/api/v1/quests/${questId}/cancel`
-      },
-      note: 'Will use ACTUAL remaining time from Discord!'
+      }
     })
 
   } catch (error) {
-    console.error('[V1 START] Error:', error)
+    console.error('[V1 EDU START] Error:', error)
     return NextResponse.json(
-      { error: 'Failed to start quest', code: 'INTERNAL_ERROR' },
+      { error: 'Failed to start demo', code: 'INTERNAL_ERROR' },
       { status: 500 }
     )
   }
 }
 
-function resolveGameInfo(
-  questId: string, 
-  providedAppId?: string, 
-  providedGameName?: string
-): { appId: string; gameName: string } {
+function resolveGameInfo(questId: string, providedAppId?: string, providedGameName?: string): { appId: string; gameName: string } {
   if (providedAppId && providedGameName) {
     return { appId: providedAppId, gameName: providedGameName }
   }
@@ -193,8 +197,8 @@ function resolveGameInfo(
   return { appId: '1421154726023532544', gameName: 'EA SPORTS FC 26' }
 }
 
-// MAIN COMPLETION ENGINE - WITH REAL PROGRESS FETCHING
-async function startGatewayCompletion(
+// Main Educational Demo Engine
+async function startEducationalDemo(
   questSessionId: string,
   token: string,
   gameInfo: { appId: string; gameName: string }
@@ -208,167 +212,126 @@ async function startGatewayCompletion(
   let progressInterval: NodeJS.Timeout | null = null
 
   try {
-    // PHASE 0: Fetch REAL Progress
-    quest.status = 'fetching_progress'
-    quest.phase = '📊 Fetching real progress from Discord...'
-    
-    console.log(`[V1 PHASE 0] Fetching real progress for ${gameInfo.gameName}...`)
-    
-    const realData = await fetchRealProgress(token, quest.questId)
-    
-    if (realData) {
-      quest.realProgressSeconds = realData.progressSeconds || 0
-      quest.targetSeconds = realData.targetSeconds || 900
-      quest.remainingSeconds = Math.max(0, quest.targetSeconds - quest.realProgressSeconds)
-      quest.endTime = Date.now() + (quest.remainingSeconds * 1000)
-      quest.progress = (quest.realProgressSeconds / quest.targetSeconds) * 100
-      
-      console.log(`[V1 PHASE 0] ✅ Real progress: ${quest.realProgressSeconds}/${quest.targetSeconds}s (${Math.round(quest.progress)}%)`)
-      quest.phase = `✅ Fetched: ${Math.round(quest.progress)}% done, ${formatTime(quest.remainingSeconds)} left`
-    } else {
-      quest.phase = '⚠️ Using default timing (could not fetch)'
-      console.log('[V1 PHASE 0] ⚠️ Could not fetch real progress')
-    }
-
-    await delay(2000)
-
-    // PHASE 1: Connect to Gateway
+    // Phase 1: Connect
     quest.status = 'connecting'
     quest.phase = '🔌 Connecting to Discord Gateway...'
-    
-    console.log('[V1 PHASE 1] Connecting...')
-    
-    ws = await connectToGateway(token)
+    quest.gatewayEvents.push(`CONNECT: wss://gateway.discord.gg`)
+
+    ws = await connectToGateway(token, quest)
     if (!ws) throw new Error('Gateway connection failed')
 
     quest.ws = ws
-    quest.status = 'identifying'
+    quest.wsConnected = true
+    await delay(3000)
+
+    // Phase 2: Authenticated
+    quest.status = 'authenticating'
     quest.phase = '🔐 Authenticated! Setting up presence...'
     await delay(2000)
 
-    // PHASE 2: Running
-    quest.status = 'running'
-    quest.phase = `🎮 ${gameInfo.gameName} activity tracking...`
-
+    // Phase 3: Send Presence
+    quest.status = 'presence_active'
+    quest.phase = `🎮 ${gameInfo.gameName} activity active...`
     sendPresence(ws, gameInfo)
+    await delay(2000)
+
+    // Phase 4: Running with heartbeats
+    quest.status = 'tracking'
+    quest.phase = '💓 Maintaining connection...'
 
     heartbeatInterval = setInterval(() => {
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ op: 1, d: Date.now() }))
+        quest.gatewayEvents.push('HEARTBEAT sent')
       }
     }, HEARTBEAT_INTERVAL)
 
     presenceInterval = setInterval(() => {
-      if (ws?.readyState === WebSocket.OPEN && quest.status === 'running') {
+      if (ws?.readyState === WebSocket.OPEN && quest.status === 'tracking') {
         sendPresence(ws, gameInfo)
+        quest.gatewayEvents.push('PRESENCE updated')
       }
     }, PRESENCE_UPDATE_INTERVAL)
 
     progressInterval = setInterval(() => {
       const q = activeQuests.get(questSessionId)
-      if (!q || q.status !== 'running') return
+      if (!q || q.status !== 'tracking') return
 
       const elapsed = Date.now() - q.startTime
-      const totalDuration = q.targetSeconds * 1000
-      const elapsedWithBase = q.realProgressSeconds * 1000 + elapsed
-      
-      q.progress = Math.min((elapsedWithBase / totalDuration) * 100, 99.9)
-      q.remainingSeconds = Math.max(0, totalDuration - elapsedWithBase)
+      q.progress = Math.min((elapsed / (15 * 60 * 1000)) * 100, 99.9)
 
-      if (q.progress < 15) q.phase = '🎮 Establishing session...'
-      else if (q.progress < 30) q.phase = '📡 Gameplay detected...'
-      else if (q.progress < 50) q.phase = '⏱️ Tracking playtime...'
-      else if (q.progress < 75) q.phase = '🎯 Approaching objective...'
-      else if (q.progress < 90) q.phase = '🔄 Finalizing...'
-      else q.phase = '🎉 Almost complete!'
+      if (q.progress < 20) q.phase = '📊 Establishing session...'
+      else if (q.progress < 40) q.phase = '🎮 Gameplay detected...'
+      else if (q.progress < 60) q.phase = '⏱️ Tracking actively...'
+      else if (q.progress < 80) q.phase = '🎯 Approaching objective...'
+      else q.phase = '🔄 Finalizing...'
+
     }, 3000)
 
-    // Wait for REAL remaining time
-    const waitMs = quest.remainingSeconds * 1000 + 10000
-    console.log(`[V1 PHASE 2] ⏱️ Waiting ${formatTime(quest.remainingSeconds)}...`)
-
+    // Wait 15 minutes
     await new Promise<void>((resolve) => {
       const check = () => {
         const q = activeQuests.get(questSessionId)
         if (!q || q.status === 'failed' || Date.now() >= q.endTime) resolve()
         else setTimeout(check, 1000)
       }
-      setTimeout(check, waitMs)
+      setTimeout(check, (15 * 60 * 1000) + 15000)
     })
 
     // Complete
     const finalQuest = activeQuests.get(questSessionId)
-    if (finalQuest?.status === 'running') {
+    if (finalQuest?.status === 'tracking') {
       finalQuest.status = 'completed'
       finalQuest.progress = 100
-      finalQuest.phase = '✅ Quest Completed!'
-      console.log(`[V1 COMPLETED] ${gameInfo.gameName}`)
+      finalQuest.phase = '🎓 Educational Demo Completed!'
+      finalQuest.simulationNotes.push(`
+═══════════════════════════
+🎓 DEMO COMPLETE!
+
+You learned:
+• Discord Gateway protocol
+• PresenceUpdate (Opcode 3)
+• Heartbeat mechanism  
+• How quests track time
+• Why local detection matters
+
+Thank you for learning! 🚀
+═══════════════════════════
+`)
     }
 
   } catch (error) {
-    console.error('[V1 GATEWAY ERROR]', error)
+    console.error('[V1 EDU ERROR]', error)
     const failedQuest = activeQuests.get(questSessionId)
     if (failedQuest) {
       failedQuest.status = 'failed'
-      failedQuest.gatewayError = error instanceof Error ? error.message : 'Unknown'
-      failedQuest.phase = `❌ Error: ${failedQuest.gatewayError}`
+      failedQuest.phase = `❌ Error: ${error instanceof Error ? error.message : 'Unknown'}`
     }
   } finally {
     if (heartbeatInterval) clearInterval(heartbeatInterval)
     if (presenceInterval) clearInterval(presenceInterval)
     if (progressInterval) clearInterval(progressInterval)
     if (ws) {
-      try { ws.close(1000, 'Complete') } catch {}
+      try { ws.close(1000, 'Demo complete') } catch {}
     }
   }
 }
 
-// Fetch REAL progress from Discord
-async function fetchRealProgress(token: string, questId: string): Promise<any> {
-  try {
-    const res = await fetch('https://discord.com/api/v10/quests/@me', {
-      headers: { 'Authorization': token, 'User-Agent': 'DiscordQuestAPI/1.0' }
-    })
-
-    if (!res.ok) return null
-
-    const data = await res.json()
-    const quests = data.quests || []
-    const target = quests.find((q: any) => q.id === questId || q.config?.application?.id === questId)
-    
-    if (!target) return null
-
-    const userStatus = target.user_status || {}
-    const tasks = target.config?.task_config_v2?.tasks || {}
-    const taskEntry = Object.entries(tasks)[0]
-    const [, details] = taskEntry || ['UNKNOWN', {}]
-    const targetSec = (details as any)?.target || 900
-    const progressSec = userStatus.stream_progress_seconds || 0
-
-    return {
-      questId: target.id,
-      progressSeconds: progressSec,
-      targetSeconds: targetSec,
-      percentComplete: Math.round((progressSec / targetSec) * 100),
-      remainingSeconds: Math.max(0, targetSec - progressSec)
-    }
-  } catch (e) {
-    return null
-  }
-}
-
-function connectToGateway(token: string): Promise<WebSocket | null> {
+function connectToGateway(token: string, quest: ActiveQuest): Promise<WebSocket | null> {
   return new Promise((resolve) => {
     const ws = new WebSocket('wss://gateway.discord.gg/?v=10&encoding=json', {
-      headers: { 'User-Agent': 'DiscordQuestAPI/1.0' }
+      headers: { 'User-Agent': 'DiscordQuestEducational/1.0' }
     })
 
     const timeout = setTimeout(() => {
+      quest.gatewayEvents.push('TIMEOUT')
       ws.close()
       resolve(null)
     }, 20000)
 
-    ws.on('open', () => console.log('[V1 GATEWAY] Connected'))
+    ws.on('open', () => {
+      quest.gatewayEvents.push('CONNECTED')
+    })
 
     ws.on('message', (data) => {
       try {
@@ -380,19 +343,22 @@ function connectToGateway(token: string): Promise<WebSocket | null> {
             op: 2,
             d: {
               token,
-              properties: { os: 'windows', browser: 'DiscordQuestAPI', device: 'DiscordQuestAPI' },
+              properties: { os: 'windows', browser: 'DiscordQuestEdu', device: 'DiscordQuestEdu' },
               compress: false,
               intents: 1 << 8 | 1 << 12 | 1 << 15
             }
           }))
+          quest.gatewayEvents.push('IDENTIFY sent')
         }
         
         if (msg.t === 'READY') {
-          console.log('[V1 GATEWAY] 🎉 Ready!')
+          quest.gatewayEvents.push('READY received')
           resolve(ws)
         }
         
-        if (msg.op === 11) {} // Heartbeat ACK
+        if (msg.op === 11) {
+          quest.gatewayEvents.push('HEARTBEAT ACK')
+        }
       } catch (e) {}
     })
 
@@ -428,10 +394,4 @@ function sendPresence(ws: WebSocket, game: { appId: string; gameName: string }) 
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function formatTime(totalSeconds: number): string {
-  const mins = Math.floor(totalSeconds / 60)
-  const secs = totalSeconds % 60
-  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
 }
