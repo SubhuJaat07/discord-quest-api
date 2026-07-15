@@ -6,29 +6,27 @@
 # Stage 1: Base with system dependencies
 FROM node:20-alpine AS base
 
-# Install Chromium dependencies (Alpine compatible packages)
+# Install Chromium dependencies (CORRECT Alpine package names!)
 RUN apk add --no-cache \
     chromium \
     nss \
     freetype \
-    freetype-dev \
     harfbuzz \
     ca-certificates \
     ttf-freefont \
     fontconfig \
     dbus \
-    # For video/codecs if needed
     ffmpeg \
-    # Additional deps for Puppeteer
-    udev \
+    # Correct Alpine names (NOT Debian names!)
+    mesa-gbm \        # libgbm in Debian
+    pango \            # libpango-1.0 in Debian
+    cairo \            # libcairo2 in Debian
+    alsa-lib \         # libasound2 in Debian
+    # X11 libraries
     libxcomposite \
     libxdamage \
     libxfixes \
-    libxrandr \
-    libgbm \
-    libpango-1.0 \
-    libcairo2 \
-    libasound2
+    libxrandr
 
 # Create non-root user early
 RUN addgroup --system --gid 1001 nodejs && \
@@ -41,7 +39,6 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install Node.js dependencies
-# Use --legacy-peer-deps for compatibility with Next.js 16
 RUN npm install --legacy-peer-deps
 
 # Copy source code
@@ -55,7 +52,7 @@ RUN npm run build
 # ============================================
 FROM node:20-alpine AS runner
 
-# Install only minimal runtime deps for Chromium
+# Install only minimal runtime deps for Chromium (Alpine compatible)
 RUN apk add --no-cache \
     chromium \
     nss \
@@ -65,15 +62,14 @@ RUN apk add --no-cache \
     ttf-freefont \
     fontconfig \
     dbus \
-    udev \
+    mesa-gbm \
+    pango \
+    cairo \
+    alsa-lib \
     libxcomposite \
     libxdamage \
     libxfixes \
-    libxrandr \
-    libgbm \
-    libpango-1.0 \
-    libcairo2 \
-    libasound2
+    libxrandr
 
 # Set environment variables for Puppeteer/Chromium
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
