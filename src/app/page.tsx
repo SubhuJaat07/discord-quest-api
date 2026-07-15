@@ -27,7 +27,8 @@ import {
   Zap,
   Wifi,
   Activity,
-  Target
+  Target,
+  Download
 } from 'lucide-react'
 
 interface DiscordQuest {
@@ -254,6 +255,52 @@ export default function Home() {
     }
   }, [sessionId, quests])
 
+  // Download local completion script
+  const handleDownloadScript = useCallback(async (quest: DiscordQuest) => {
+    if (!sessionId) return
+    
+    try {
+      const response = await fetch('/api/quest/script', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          sessionId, 
+          questId: quest.id, 
+          appName: quest.gameName, 
+          appId: quest.appId,
+          platform: 'windows'
+        })
+      })
+      
+      if (!response.ok) throw new Error('Failed to generate script')
+      
+      // Get filename from headers or create one
+      const contentDisposition = response.headers.get('Content-Disposition')
+      let filename = `complete_${quest.gameName.replace(/[^a-zA-Z0-9]/g, '_')}.bat`
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename="(.+)"/)
+        if (match) filename = match[1]
+      }
+      
+      // Download file
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+      
+      setSuccessMessage(`📥 Script downloaded! Run it locally with Discord open.`)
+      setTimeout(() => setSuccessMessage(null), 8000)
+    } catch (err) {
+      setError('Failed to download script')
+      setTimeout(() => setError(null), 5000)
+    }
+  }, [sessionId])
+
   // Cancel active quest
   const handleCancelQuest = useCallback(async () => {
     if (!sessionId) return
@@ -346,11 +393,10 @@ export default function Home() {
       <main className="container mx-auto px-4 py-8 max-w-4xl">
         
         {/* Educational Disclaimer */}
-        <Alert className="mb-6 border-blue-500/30 bg-blue-950/20">
-          <Activity className="h-4 w-4 text-blue-500" />
-          <AlertDescription className="text-blue-200/80 text-sm">
-            <strong>Real Quest Completion:</strong> This tool uses Discord&apos;s Rich Presence API to simulate gameplay activity. 
-            Quests require 15 minutes of activity tracking. Keep this tab open during completion.
+        <Alert className="mb-6 border-orange-500/30 bg-orange-950/20">
+          <Activity className="h-4 w-4 text-orange-500" />
+          <AlertDescription className="text-orange-200/80 text-sm">
+            <strong>⚡ Local Completion Required:</strong> Discord quests need LOCAL game detection. Use "Download Script" to get a file that completes quests when run on your PC with Discord open. This is the ONLY method that actually works!
           </AlertDescription>
         </Alert>
 
@@ -681,8 +727,8 @@ export default function Home() {
                           </div>
                         </div>
 
-                        {/* Action Button */}
-                        <div className="shrink-0">
+                        {/* Action Buttons */}
+                        <div className="shrink-0 flex flex-col gap-2">
                           {quest.status === 'completed' ? (
                             <Button 
                               disabled 
@@ -693,22 +739,34 @@ export default function Home() {
                               Completed ✓
                             </Button>
                           ) : quest.status === 'available' ? (
+                            <>
+                              {/* Primary: Download Script Button */}
+                              <Button 
+                                onClick={() => handleDownloadScript(quest)}
+                                className="bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white font-medium"
+                              >
+                                <Download className="w-4 h-4 mr-1" />
+                                Download Script
+                              </Button>
+                              {/* Secondary: Web Simulation Info */}
+                              <Button 
+                                onClick={() => handleStartQuest(quest.id)}
+                                disabled={appState === 'starting_quest' || appState === 'quest_active'}
+                                variant="outline"
+                                className="border-purple-700/50 text-purple-300 hover:bg-purple-800/30 text-xs"
+                              >
+                                <Activity className="w-3 h-3 mr-1" />
+                                Web Sim (Fake)
+                              </Button>
+                            </>
+                          ) : quest.status === 'expired' ? (
                             <Button 
-                              onClick={() => handleStartQuest(quest.id)}
-                              disabled={appState === 'starting_quest' || appState === 'quest_active'}
-                              className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white font-medium"
+                              disabled 
+                              variant="outline"
+                              className="border-red-700 text-red-500 cursor-default"
                             >
-                              {activeQuestId === quest.id ? (
-                                <>
-                                  <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                                  Starting...
-                                </>
-                              ) : (
-                                <>
-                                  <Play className="w-4 h-4 mr-1" />
-                                  Complete (15 min)
-                                </>
-                              )}
+                              <Clock className="w-4 h-4 mr-1" />
+                              Expired
                             </Button>
                           ) : (
                             <Button 
@@ -722,11 +780,23 @@ export default function Home() {
                         </div>
                       </div>
 
-                      {/* Progress Bar for completed */}
-                      {quest.status === 'completed' && (
+                      {/* Progress Bar for completed/in-progress */}
+                      {(quest.status === 'completed' || quest.status === 'in_progress') && (
                         <div className="mt-4 pt-4 border-t border-purple-800/20">
-                          <Progress value={100} className="h-2" />
-                          <p className="text-xs text-green-400/70 mt-1 text-right">100% Complete</p>
+                          <Progress value={quest.progress || 0} className="h-2" />
+                          <p className="text-xs text-green-400/70 mt-1 text-right">
+                            {quest.status === 'completed' ? '100% Complete' : `${Math.round(quest.progress || 0)}% Progress`}
+                          </p>
+                        </div>
+                      )}
+                      
+                      {/* Instructions for available quests */}
+                      {quest.status === 'available' && (
+                        <div className="mt-4 pt-4 border-t border-orange-800/20">
+                          <p className="text-xs text-orange-400/70 flex items-center gap-1">
+                            <Download className="w-3 h-3" />
+                            Download &amp; run script locally with Discord open → Quest auto-completes in 15 min
+                          </p>
                         </div>
                       )}
                     </CardContent>

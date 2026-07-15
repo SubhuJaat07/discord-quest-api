@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSessionToken } from '@/lib/session'
 
-// Fetch REAL Discord Quests - No Mock Data!
+// Fetch REAL Discord Quests from the correct endpoint
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
@@ -17,90 +17,139 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Session expired or invalid' }, { status: 401 })
     }
 
-    // Fetch REAL data from Discord
-    const [userRes, applicationsRes, guildsRes] = await Promise.allSettled([
-      // Get user info
-      fetch('https://discord.com/api/v10/users/@me', {
-        headers: { 'Authorization': token }
-      }),
-      
-      // Get detectable applications (games that can have quests)
-      fetch('https://discord.com/api/v10/applications/detectable?limit=20', {
-        headers: { 'Authorization': token }
-      }),
+    // Fetch REAL quests from Discord's actual quest endpoint
+    const questsRes = await fetch('https://discord.com/api/v10/quests/@me', {
+      headers: { 
+        'Authorization': token,
+        'User-Agent': 'DiscordQuestTool/1.0 (Educational)'
+      }
+    })
 
-      // Check user's guilds for potential quest availability
-      fetch('https://discord.com/api/v10/users/@me/guilds', {
-        headers: { 'Authorization': token }
-      })
-    ])
-
-    let user = null
-    let games: any[] = []
-    let guildCount = 0
-
-    if (userRes.status === 'fulfilled' && userRes.value.ok) {
-      user = await userRes.value.json()
-    }
-
-    if (applicationsRes.status === 'fulfilled' && applicationsRes.value.ok) {
-      const apps = await applicationsRes.value.json()
-      games = Array.isArray(apps) ? apps : []
-    }
-
-    if (guildsRes.status === 'fulfilled' && guildsRes.value.ok) {
-      const guilds = await guildsRes.value.json()
-      guildCount = Array.isArray(guilds) ? guilds.length : 0
-    }
-
-    // Convert detectable games into quest format
-    const realQuests = games.slice(0, 12).map((app, index) => ({
-      id: `real_${index}_${app.id}`,
-      name: `Play ${app.name}`,
-      description: `Complete 15 minutes of ${app.name} gameplay. This quest uses Discord's Rich Presence system to track your activity.`,
-      status: 'available' as const,
-      reward: `${app.name} Reward + XP`,
-      totalTime: 15,
-      gameName: app.name,
-      gameIcon: app.icon 
-        ? `https://cdn.discordapp.com/app-icons/${app.id}/${app.icon}.png?size=64`
-        : '🎮',
-      appId: app.id,
-      isReal: true,
-      canComplete: true
-    }))
-
-    // If no games found, provide helpful message
-    if (realQuests.length === 0) {
+    if (!questsRes.ok) {
+      console.error('[QUESTS API] Discord returned:', questsRes.status, await questsRes.text())
       return NextResponse.json({
         success: true,
         quests: [],
-        message: 'No verified games found for quest completion.',
-        suggestion: 'Try joining some gaming servers or verifying game ownership in Discord settings.',
-        userInfo: user ? {
-          username: user.username,
-          id: user.id,
-          flags: user.flags,
-          premium_type: user.premium_type
-        } : null,
-        detectedGames: 0,
-        guildCount
+        error: `Discord API error: ${questsRes.status}`,
+        message: 'Unable to fetch quests from Discord. Please check your token.'
       })
+    }
+
+    const questsData = await questsRes.json()
+    const rawQuests = questsData.quests || []
+
+    // Get current time for filtering
+    const now = new Date()
+
+    // Process and filter real quests
+    const processedQuests = rawQuests
+      .map((quest: any) => {
+        const config = quest.config || {}
+        const messages = config.messages || {}
+        const application = config.application || {}
+        const taskConfig = config.task_config_v2 || {}
+        const tasks = taskConfig.tasks || {}
+        const userStatus = quest.user_status || {}
+
+        // Parse dates
+        const expiresAt = new Date(config.expires_at)
+        const startsAt = new Date(config.starts_at)
+
+        // Determine quest status
+        let status: 'available' | 'in_progress' | 'completed' | 'expired' = 'available'
+        const isExpired = now > expiresAt
+        const isCompleted = userStatus.completed_at !== null
+        const hasProgress = (userStatus.stream_progress_seconds || 0) > 0
+
+        if (isCompleted) {
+          status = 'completed'
+        } else if (isExpired) {
+          status = 'expired'
+        } else if (hasProgress) {
+          status = 'in_progress'
+        } else {
+          status = 'available'
+        }
+
+        // Extract task info
+        const taskEntry = Object.entries(tasks)[0]
+        const [taskType, taskDetails] = taskEntry || ['UNKNOWN', {}]
+        const targetSeconds = (taskDetails as any)?.target || 900
+        const progressSeconds = userStatus.stream_progress_seconds || 0
+        const progressPercent = Math.min((progressSeconds / targetSeconds) * 100, 100)
+
+        return {
+          id: quest.id,
+          name: messages.quest_name || application.name || 'Unknown Quest',
+          description: `${application.name} - ${messages.game_publisher || 'Unknown Publisher'}`,
+          status,
+          reward: getRewardFromFeatures(config.features),
+          progress: Math.round(progressPercent),
+          totalTime: Math.ceil(targetSeconds / 60), // Convert to minutes
+          gameName: application.name || 'Unknown Game',
+          gameIcon: getGameIcon(application.id),
+          appId: application.id,
+          isReal: true,
+          canComplete: !isExpired && !isCompleted,
+          
+          // Additional real data
+          publisher: messages.game_publisher || 'Unknown',
+          taskType: taskType,
+          taskTargetSeconds: targetSeconds,
+          progressSeconds: progressSeconds,
+          remainingSeconds: Math.max(0, targetSeconds - progressSeconds),
+          startsAt: config.starts_at,
+          expiresAt: config.expires_at,
+          isExpired,
+          isCompleted,
+          enrolledAt: userStatus.enrolled_at,
+          completedAt: userStatus.completed_at,
+          claimedAt: userStatus.claimed_at,
+          isClaimed: userStatus.is_claimed || false,
+          
+          // Asset URLs
+          heroImage: config.assets?.hero 
+            ? `https://cdn.discordapp.com/quest-assets/${config.assets.hero}` 
+            : null,
+          gameTile: config.assets?.game_tile 
+            ? `https://cdn.discordapp.com/quest-assets/${config.assets.game_tile}` 
+            : null,
+          
+          // Colors
+          primaryColor: config.colors?.primary || '#5865F2',
+          secondaryColor: config.colors?.secondary || '#000000',
+          
+          // Application link
+          appLink: application.link || null
+        }
+      })
+      .filter((quest: any) => {
+        // Only show non-expired quests by default, or completed ones
+        return !quest.isExpired || quest.isCompleted
+      })
+      .sort((a: any, b: any) => {
+        // Sort: available first, then in_progress, then completed, expired last
+        const statusOrder = { 'available': 0, 'in_progress': 1, 'completed': 2, 'expired': 3 }
+        return (statusOrder[a.status] || 4) - (statusOrder[b.status] || 4)
+      })
+
+    // Summary statistics
+    const summary = {
+      total: processedQuests.length,
+      available: processedQuests.filter((q: any) => q.status === 'available').length,
+      inProgress: processedQuests.filter((q: any) => q.status === 'in_progress').length,
+      completed: processedQuests.filter((q: any) => q.status === 'completed').length,
+      expired: processedQuests.filter((q: any) => q.status === 'expired').length
     }
 
     return NextResponse.json({
       success: true,
-      quests: realQuests,
-      detectedGames: realQuests.length,
-      message: `${realQuests.length} games available for quest completion`,
-      userInfo: user ? {
-        username: user.username,
-        id: user.id,
-        flags: user.flags,
-        premium_type: user.premium_type
-      } : null,
-      note: 'These are REAL Discord-verified games. Quest completion uses actual Discord APIs.',
-      method: 'Rich Presence + Activity Simulation'
+      quests: processedQuests,
+      summary,
+      fetchedAt: now.toISOString(),
+      message: `Found ${processedQuests.length} quests (${summary.available} available, ${summary.completed} completed)`,
+      note: 'These are REAL Discord quests. Completion requires local gameplay detection.',
+      method: 'PLAY_ON_DESKTOP - Requires local Discord client with Rich Presence'
     })
 
   } catch (error) {
@@ -113,4 +162,26 @@ export async function GET(request: NextRequest) {
       message: 'Unable to fetch quests. Please try again.'
     })
   }
+}
+
+// Helper function to determine reward based on features
+function getRewardFromFeatures(features?: number[]): string {
+  if (!features || features.length === 0) return 'Rewards'
+  
+  // Common reward patterns based on feature flags
+  const featureSum = features.reduce((a, b) => a + b, 0)
+  
+  if (features.includes(15)) return '⊙ 700 Orbs + PFP' // High value quest
+  if (features.includes(7)) return '⊙ 200 Orbs' // Standard quest
+  if (features.includes(3)) return '⊙ 100 Orbs' // Small quest
+  
+  return 'Orbs Reward'
+}
+
+// Helper function to get game icon URL
+function getGameIcon(appId?: string): string {
+  if (!appId) return '🎮'
+  
+  // Return CDN URL for app icon
+  return `https://cdn.discordapp.com/app-icons/${appId}/icon.png?size=64`
 }
