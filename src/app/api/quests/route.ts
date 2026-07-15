@@ -126,7 +126,7 @@ export async function GET(request: NextRequest) {
     try {
       const response = await fetch('https://discord.com/api/v10/applications/detectable', {
         headers: {
-          'Authorization': `Bearer ${token}`,
+          'Authorization': token,
           'Content-Type': 'application/json'
         }
       })
