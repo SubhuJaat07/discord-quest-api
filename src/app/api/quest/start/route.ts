@@ -251,7 +251,7 @@ async function startRealQuestCompletion(questSessionId: string, token: string, g
 
     // PHASE 2: Detect Game & Setup Presence  
     quest.status = 'detecting'
-    quest.phase = `Setting up ${gameName} presence...`
+    quest.phase = `Setting up ${gameInfo.name} presence...`
     
     // Try to set activity via Discord API
     const activitySet = await setDiscordActivity(token, gameInfo)
@@ -454,7 +454,7 @@ async function completeQuest(quest: ActiveQuestSession, token: string, gameInfo:
     // Final activity update showing completion
     await setDiscordActivity(token, {
       ...gameInfo,
-      name: `${gameName} - Quest Complete!`
+      name: `${gameInfo.name} - Quest Complete!`
     }).catch(() => {})
 
     // Auto-cleanup after 10 minutes
