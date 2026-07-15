@@ -24,7 +24,10 @@ import {
   Lock,
   Timer,
   XCircle,
-  Zap
+  Zap,
+  Wifi,
+  Activity,
+  Target
 } from 'lucide-react'
 
 interface DiscordQuest {
@@ -37,7 +40,9 @@ interface DiscordQuest {
   totalTime?: number
   gameName: string
   gameIcon?: string
+  appId?: string
   isReal?: boolean
+  canComplete?: boolean
 }
 
 interface UserInfo {
@@ -50,13 +55,17 @@ interface UserInfo {
 interface QuestStatus {
   id: string
   questId: string
-  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  appName: string
+  status: 'initializing' | 'detecting' | 'running' | 'completing' | 'completed' | 'failed' | 'cancelled'
+  phase: string
   progress: number
   elapsedSeconds: number
   remainingSeconds: number
   totalSeconds: number
   formattedElapsed: string
   formattedRemaining: string
+  rpcConnected: boolean
+  activitySent: boolean
 }
 
 type AppState = 'idle' | 'authenticating' | 'fetching_quests' | 'ready' | 'starting_quest' | 'quest_active'
@@ -68,6 +77,7 @@ export default function Home() {
   const [quests, setQuests] = useState<DiscordQuest[]>([])
   const [userInfo, setUserInfo] = useState<UserInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [activeQuestId, setActiveQuestId] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   
@@ -78,16 +88,13 @@ export default function Home() {
   // Cleanup polling on unmount
   useEffect(() => {
     return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current)
-      }
+      if (pollingRef.current) clearInterval(pollingRef.current)
     }
   }, [])
 
   // Poll quest status when active
   useEffect(() => {
     if (appState === 'quest_active' && sessionId) {
-      // Poll every 3 seconds for smooth updates
       pollingRef.current = setInterval(async () => {
         try {
           const response = await fetch(`/api/quest/start?sessionId=${sessionId}`)
@@ -96,11 +103,13 @@ export default function Home() {
           if (data.success && data.quest) {
             setQuestStatus(data.quest)
             
-            // Check if completed
             if (data.quest.status === 'completed') {
               clearInterval(pollingRef.current!)
+              pollingRef.current = null
               setAppState('ready')
               setActiveQuestId(null)
+              setSuccessMessage(`🎉 Quest completed successfully!`)
+              
               setQuests(prevQuests => 
                 prevQuests.map(q => 
                   q.id === activeQuestId 
@@ -108,6 +117,14 @@ export default function Home() {
                     : q
                 )
               )
+              
+              setTimeout(() => setSuccessMessage(null), 10000)
+            } else if (data.quest.status === 'failed') {
+              clearInterval(pollingRef.current!)
+              pollingRef.current = null
+              setAppState('ready')
+              setActiveQuestId(null)
+              setError('Quest failed. Please try again.')
             }
           }
         } catch (err) {
@@ -130,6 +147,7 @@ export default function Home() {
     }
 
     setError(null)
+    setSuccessMessage(null)
     setAppState('authenticating')
 
     try {
@@ -148,7 +166,6 @@ export default function Home() {
       setSessionId(data.sessionId)
       setUserInfo(data.user)
       
-      // Auto-fetch quests after successful auth
       await fetchQuests(data.sessionId)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to authenticate')
@@ -171,8 +188,8 @@ export default function Home() {
       setQuests(data.quests || [])
       setAppState('ready')
       
-      if (data.message) {
-        console.log('Quest message:', data.message)
+      if (data.message && data.quests.length === 0) {
+        setError(data.message)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch quests')
@@ -180,13 +197,14 @@ export default function Home() {
     }
   }, [])
 
-  // Start a quest with REAL 15-minute timing
+  // Start REAL quest completion
   const handleStartQuest = useCallback(async (questId: string) => {
     if (!sessionId) return
 
     setActiveQuestId(questId)
     setAppState('starting_quest')
     setError(null)
+    setSuccessMessage(null)
     setQuestStatus(null)
 
     try {
@@ -199,9 +217,8 @@ export default function Home() {
       const data = await response.json()
 
       if (!response.ok) {
-        // If already have a quest running
         if (response.status === 409 && data.currentQuest) {
-          setError(`Already running quest: ${data.currentQuest} (${data.elapsed}s elapsed, ${data.remaining}s remaining)`)
+          setError(`Already running: ${data.phase} (${data.elapsed}s elapsed)`)
           setAppState('ready')
           setActiveQuestId(null)
           return
@@ -209,45 +226,55 @@ export default function Home() {
         throw new Error(data.error || 'Failed to start quest')
       }
 
-      // Start quest - will take REAL 15 minutes
+      // Quest started - will take REAL 15 minutes with actual Discord API calls
       setAppState('quest_active')
       
-      // Initial status
       setQuestStatus({
         id: data.questSessionId,
         questId,
-        status: 'running',
+        appName: quests.find(q => q.id === questId)?.gameName || 'Game',
+        status: 'initializing',
+        phase: data.phases?.[0] || 'Starting...',
         progress: 0,
         elapsedSeconds: 0,
-        remainingSeconds: 900, // 15 minutes
+        remainingSeconds: 900,
         totalSeconds: 900,
         formattedElapsed: '00:00',
-        formattedRemaining: '15:00'
+        formattedRemaining: '15:00',
+        rpcConnected: false,
+        activitySent: false
       })
+
+      setSuccessMessage(`🚀 Starting real quest completion...`)
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start quest')
       setAppState('ready')
       setActiveQuestId(null)
     }
-  }, [sessionId])
+  }, [sessionId, quests])
 
   // Cancel active quest
   const handleCancelQuest = useCallback(async () => {
     if (!sessionId) return
 
     try {
-      const response = await fetch('/api/quest/start?sessionId=${sessionId}', {
+      const response = await fetch(`/api/quest/start?sessionId=${sessionId}`, {
         method: 'DELETE'
       })
 
       if (response.ok) {
+        if (pollingRef.current) {
+          clearInterval(pollingRef.current)
+          pollingRef.current = null
+        }
+        
         setAppState('ready')
         setActiveQuestId(null)
         setQuestStatus(null)
-        if (pollingRef.current) {
-          clearInterval(pollingRef.current)
-        }
+        setSuccessMessage(null)
+        setError('Quest cancelled.')
+        setTimeout(() => setError(null), 5000)
       }
     } catch (err) {
       console.error('Cancel error:', err)
@@ -256,24 +283,26 @@ export default function Home() {
 
   // Logout / Clear session
   const handleLogout = useCallback(() => {
-    // Cancel any active quest first
     if (pollingRef.current) {
       clearInterval(pollingRef.current)
+      pollingRef.current = null
     }
     
     setToken('')
     setSessionId(null)
     setUserInfo(null)
     setQuests([])
-    setAppState('ready') // Keep ready state to show UI
+    setAppState('idle') // Back to login state
     setError(null)
     setActiveQuestId(null)
     setQuestStatus(null)
+    setSuccessMessage(null)
   }, [])
 
   // Refresh quests
   const handleRefresh = useCallback(() => {
     if (sessionId) {
+      setError(null)
       fetchQuests(sessionId)
     }
   }, [sessionId, fetchQuests])
@@ -281,7 +310,7 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-950 to-slate-900">
       {/* Header */}
-      <header className="border-b border-purple-800/30 backdrop-blur-sm bg-black/20">
+      <header className="border-b border-purple-800/30 backdrop-blur-sm bg-black/20 sticky top-0 z-50">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-lg bg-gradient-to-r from-indigo-500 to-purple-600">
@@ -289,7 +318,7 @@ export default function Home() {
             </div>
             <div>
               <h1 className="text-xl font-bold text-white">Discord Quest Tool</h1>
-              <p className="text-xs text-purple-300/70">Educational Purpose Only</p>
+              <p className="text-xs text-purple-300/70">Real Quest Completion Engine</p>
             </div>
           </div>
           
@@ -317,15 +346,23 @@ export default function Home() {
       <main className="container mx-auto px-4 py-8 max-w-4xl">
         
         {/* Educational Disclaimer */}
-        <Alert className="mb-6 border-amber-500/30 bg-amber-950/20">
-          <AlertTriangle className="h-4 w-4 text-amber-500" />
-          <AlertDescription className="text-amber-200/80 text-sm">
-            <strong>Educational Purpose Only:</strong> This tool is for learning about Discord APIs and Rich Presence. 
-            Use responsibly and respect Discord&apos;s Terms of Service. Never share your token with anyone.
+        <Alert className="mb-6 border-blue-500/30 bg-blue-950/20">
+          <Activity className="h-4 w-4 text-blue-500" />
+          <AlertDescription className="text-blue-200/80 text-sm">
+            <strong>Real Quest Completion:</strong> This tool uses Discord&apos;s Rich Presence API to simulate gameplay activity. 
+            Quests require 15 minutes of activity tracking. Keep this tab open during completion.
           </AlertDescription>
         </Alert>
 
-        {/* Token Input Section - Only show when not authenticated */}
+        {/* Success Message */}
+        {successMessage && (
+          <Alert className="mb-4 border-green-500/30 bg-green-950/20">
+            <Trophy className="h-4 w-4 text-green-500" />
+            <AlertDescription className="text-green-300">{successMessage}</AlertDescription>
+          </Alert>
+        )}
+
+        {/* Token Input Section */}
         {(appState === 'idle' || appState === 'authenticating') && (
           <Card className="border-purple-800/30 bg-slate-900/50 backdrop-blur-sm mb-8">
             <CardHeader className="text-center pb-4">
@@ -334,7 +371,7 @@ export default function Home() {
               </div>
               <CardTitle className="text-2xl text-white">Discord Authentication</CardTitle>
               <CardDescription className="text-purple-300/70">
-                Enter your Discord User Token to view available quests
+                Enter your Discord User Token to access real quest completion
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -360,11 +397,10 @@ export default function Home() {
                 </Button>
               </div>
               
-              <div className="flex items-start gap-2 p-3 rounded-lg bg-blue-950/30 border border-blue-800/30">
-                <Shield className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" />
-                <p className="text-xs text-blue-300/70">
-                  Your token is stored securely in memory only and never persisted to disk or shared.
-                  It will be cleared when you logout or close this session.
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-green-950/30 border border-green-800/30">
+                <Wifi className="w-4 h-4 text-green-400 mt-0.5 shrink-0" />
+                <p className="text-xs text-green-300/70">
+                  <strong>Secure Connection:</strong> Token stored in memory only. Uses real Discord APIs for quest completion.
                 </p>
               </div>
 
@@ -383,12 +419,12 @@ export default function Home() {
                 {appState === 'authenticating' ? (
                   <>
                     <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                    Authenticating...
+                    Connecting to Discord...
                   </>
                 ) : (
                   <>
-                    <Shield className="w-4 h-4 mr-2" />
-                    Connect & Fetch Quests
+                    <Target className="w-4 h-4 mr-2" />
+                    Connect & Load Quests
                   </>
                 )}
               </Button>
@@ -408,7 +444,7 @@ export default function Home() {
                       <Skeleton className="h-5 w-48 bg-purple-800/30" />
                       <Skeleton className="h-4 w-64 bg-purple-800/20" />
                     </div>
-                    <Skeleton className="h-10 w-24 bg-purple-800/30" />
+                    <Skeleton className="h-10 w-28 bg-purple-800/30" />
                   </div>
                 </CardContent>
               </Card>
@@ -426,7 +462,7 @@ export default function Home() {
                   <Trophy className="w-8 h-8 text-yellow-500" />
                   <div>
                     <p className="text-2xl font-bold text-white">{quests.length}</p>
-                    <p className="text-xs text-purple-300/70">Total Quests</p>
+                    <p className="text-xs text-purple-300/70">Available</p>
                   </div>
                 </CardContent>
               </Card>
@@ -443,12 +479,10 @@ export default function Home() {
               </Card>
               <Card className="bg-slate-900/50 border-blue-800/30">
                 <CardContent className="p-4 flex items-center gap-3">
-                  <Play className="w-8 h-8 text-blue-500" />
+                  <Zap className="w-8 h-8 text-blue-500" />
                   <div>
-                    <p className="text-2xl font-bold text-white">
-                      {quests.filter(q => q.status === 'available').length}
-                    </p>
-                    <p className="text-xs text-blue-300/70">Available</p>
+                    <p className="text-2xl font-bold text-white">RPC</p>
+                    <p className="text-xs text-blue-300/70">Real API</p>
                   </div>
                 </CardContent>
               </Card>
@@ -457,7 +491,7 @@ export default function Home() {
                   <Timer className="w-8 h-8 text-orange-500" />
                   <div>
                     <p className="text-2xl font-bold text-white">15m</p>
-                    <p className="text-xs text-orange-300/70">Per Quest</p>
+                    <p className="text-xs text-orange-300/70">Real Time</p>
                   </div>
                 </CardContent>
               </Card>
@@ -468,10 +502,10 @@ export default function Home() {
               <h2 className="text-xl font-semibold text-white flex items-center gap-2">
                 <Gamepad2 className="w-5 h-5 text-purple-400" />
                 Available Quests
-                {quests.length > 0 && quests.every(q => q.isReal) && (
+                {quests.every(q => q.isReal) && quests.length > 0 && (
                   <Badge variant="secondary" className="bg-green-900/30 text-green-300 border-green-700 ml-2">
                     <Zap className="w-3 h-3 mr-1" />
-                    Real
+                    REAL GAMES
                   </Badge>
                 )}
               </h2>
@@ -487,15 +521,25 @@ export default function Home() {
               </Button>
             </div>
 
-            {/* Active Quest Progress - REAL TIME */}
+            {/* Active Quest Progress - REAL TIME WITH DETAILS */}
             {appState === 'quest_active' && questStatus && (
-              <Card className="mb-6 border-green-500/50 bg-green-950/20 overflow-hidden">
+              <Card className="mb-6 border-green-500/50 bg-gradient-to-br from-green-950/20 to-emerald-950/10 overflow-hidden">
                 <CardContent className="p-6">
                   <div className="flex items-center justify-between mb-4">
-                    <span className="text-green-300 font-medium flex items-center gap-2">
-                      <Play className="w-4 h-4 animate-pulse" />
-                      Quest in Progress...
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-green-300 font-medium flex items-center gap-2">
+                        <Activity className={`w-4 h-4 ${questStatus.status === 'running' ? 'animate-pulse' : ''}`} />
+                        {questStatus.phase}
+                      </span>
+                      <Badge variant="outline" className={
+                        questStatus.rpcConnected 
+                          ? 'bg-green-900/30 text-green-300 border-green-600' 
+                          : 'bg-yellow-900/30 text-yellow-300 border-yellow-600'
+                      }>
+                        <Wifi className="w-3 h-3 mr-1" />
+                        RPC: {questStatus.rpcConnected ? 'Connected' : 'Connecting...'}
+                      </Badge>
+                    </div>
                     <Button 
                       variant="outline" 
                       size="sm"
@@ -509,40 +553,57 @@ export default function Home() {
 
                   {/* Progress Bar */}
                   <div className="mb-4">
-                    <Progress value={questStatus.progress} className="h-3 mb-2" />
+                    <Progress value={questStatus.progress} className="h-4 mb-2" />
                     <div className="flex justify-between text-sm">
-                      <span className="text-green-400 font-mono">{Math.round(questStatus.progress)}%</span>
+                      <span className="text-green-400 font-mono font-bold">{Math.round(questStatus.progress)}%</span>
                       <span className="text-green-400/70 font-mono">
-                        {questStatus.formattedElapsed} / {questStatus.formattedRemaining}
+                        {questStatus.formattedElapsed} elapsed → {questStatus.formattedRemaining} remaining
                       </span>
                     </div>
                   </div>
 
-                  {/* Time Details */}
-                  <div className="grid grid-cols-3 gap-4 p-3 rounded-lg bg-black/20">
-                    <div className="text-center">
-                      <p className="text-xs text-purple-400/60">Elapsed</p>
-                      <p className="text-lg font-mono text-white">{questStatus.formattedElapsed}</p>
+                  {/* Detailed Status Grid */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4 rounded-lg bg-black/30 mb-4">
+                    <div className="text-center p-2 rounded bg-black/20">
+                      <p className="text-[10px] text-purple-400/60 uppercase tracking-wider">Status</p>
+                      <p className="text-sm font-semibold text-white capitalize mt-1">{questStatus.status}</p>
                     </div>
-                    <div className="text-center">
-                      <p className="text-xs text-purple-400/60">Remaining</p>
-                      <p className="text-lg font-mono text-orange-400">{questStatus.formattedRemaining}</p>
+                    <div className="text-center p-2 rounded bg-black/20">
+                      <p className="text-[10px] text-purple-400/60 uppercase tracking-wider">Elapsed</p>
+                      <p className="text-lg font-mono text-blue-400 mt-1">{questStatus.formattedElapsed}</p>
                     </div>
-                    <div className="text-center">
-                      <p className="text-xs text-purple-400/60">Total</p>
-                      <p className="text-lg font-mono text-white">15:00</p>
+                    <div className="text-center p-2 rounded bg-black/20">
+                      <p className="text-[10px] text-purple-400/60 uppercase tracking-wider">Remaining</p>
+                      <p className="text-lg font-mono text-orange-400 mt-1">{questStatus.formattedRemaining}</p>
+                    </div>
+                    <div className="text-center p-2 rounded bg-black/20">
+                      <p className="text-[10px] text-purple-400/60 uppercase tracking-wider">Total</p>
+                      <p className="text-lg font-mono text-white mt-1">15:00</p>
                     </div>
                   </div>
 
-                  <p className="text-xs text-green-400/50 mt-3 text-center">
-                    ⏱️ This quest requires 15 minutes of simulated gameplay. Keep this tab open.
+                  {/* Activity Status */}
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-black/20 text-xs">
+                    <div className="flex items-center gap-4">
+                      <span className={`flex items-center gap-1 ${questStatus.activitySent ? 'text-green-400' : 'text-yellow-400'}`}>
+                        <Zap className="w-3 h-3" />
+                        Activity: {questStatus.activitySent ? 'Active' : 'Pending'}
+                      </span>
+                    </div>
+                    <span className="text-purple-400/50">
+                      ⏱️ Real Discord API integration
+                    </span>
+                  </div>
+
+                  <p className="text-xs text-green-400/60 mt-3 text-center">
+                    ⚡ This uses REAL Discord Rich Presence APIs. Keep this tab open for 15 minutes.
                   </p>
                 </CardContent>
               </Card>
             )}
 
             {/* Error Display */}
-            {error && (
+            {error && !successMessage && (
               <Alert className="mb-4 border-red-500/30 bg-red-950/20">
                 <AlertTriangle className="h-4 w-4 text-red-500" />
                 <AlertDescription className="text-red-300">{error}</AlertDescription>
@@ -554,16 +615,16 @@ export default function Home() {
               {quests.length === 0 ? (
                 <Card className="border-purple-800/30 bg-slate-900/50">
                   <CardContent className="p-12 text-center">
-                    <Gamepad2 className="w-12 h-12 text-purple-500/50 mx-auto mb-4" />
-                    <p className="text-purple-300/70 text-lg">No Active Quests Found</p>
-                    <p className="text-sm text-purple-400/50 mt-2 max-w-md mx-auto">
-                      No quests are currently available for your account. This could be because:
+                    <Gamepad2 className="w-16 h-16 text-purple-500/50 mx-auto mb-4" />
+                    <h3 className="text-lg font-semibold text-white mb-2">No Games Detected</h3>
+                    <p className="text-sm text-purple-300/70 max-w-md mx-auto mb-4">
+                      No verified games found for your account. Quest completion requires detectable games.
                     </p>
-                    <ul className="text-xs text-purple-400/40 mt-3 space-y-1">
-                      <li>• Quests are region-locked or account-specific</li>
-                      <li>• All available quests are already completed</li>
-                      <li>• No active quest campaigns at this time</li>
-                    </ul>
+                    <div className="space-y-2 text-left max-w-sm mx-auto text-xs text-purple-400/50">
+                      <p>• Try joining gaming Discord servers</p>
+                      <p>• Verify game ownership in Discord settings</p>
+                      <p>• Some games may not support quests</p>
+                    </div>
                     <Button 
                       variant="outline" 
                       size="sm"
@@ -591,25 +652,26 @@ export default function Home() {
                       <div className="flex flex-col md:flex-row md:items-center gap-4">
                         {/* Game Icon & Info */}
                         <div className="flex items-center gap-4 flex-1">
-                          <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center text-2xl shrink-0 overflow-hidden">
+                          <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center text-2xl shrink-0 overflow-hidden shadow-lg">
                             {quest.gameIcon?.startsWith('http') ? (
                               <img src={quest.gameIcon} alt="" className="w-full h-full object-cover" />
                             ) : (
-                              quest.gameIcon || '🎮'
+                              <span>{quest.gameIcon || '🎮'}</span>
                             )}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
                               <h3 className="font-semibold text-white truncate">{quest.name}</h3>
                               <StatusBadge status={quest.status} />
                               {quest.isReal && (
                                 <Badge variant="secondary" className="bg-green-900/30 text-green-300 border-green-700 text-[10px] px-1.5 py-0">
+                                  <Zap className="w-3 h-3 mr-0.5" />
                                   REAL
                                 </Badge>
                               )}
                             </div>
                             <p className="text-sm text-purple-300/70 line-clamp-1">{quest.gameName}</p>
-                            <p className="text-xs text-purple-400/50 mt-1 line-clamp-1">{quest.description}</p>
+                            <p className="text-xs text-purple-400/50 mt-1 line-clamp-2">{quest.description}</p>
                             {quest.reward && (
                               <p className="text-xs text-yellow-400/80 mt-1 flex items-center gap-1">
                                 <Trophy className="w-3 h-3" />
@@ -628,13 +690,13 @@ export default function Home() {
                               className="bg-green-900/30 text-green-400 border-green-800/50 cursor-default"
                             >
                               <CheckCircle2 className="w-4 h-4 mr-1" />
-                              Completed
+                              Completed ✓
                             </Button>
                           ) : quest.status === 'available' ? (
                             <Button 
                               onClick={() => handleStartQuest(quest.id)}
                               disabled={appState === 'starting_quest' || appState === 'quest_active'}
-                              className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white"
+                              className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white font-medium"
                             >
                               {activeQuestId === quest.id ? (
                                 <>
@@ -644,7 +706,7 @@ export default function Home() {
                               ) : (
                                 <>
                                   <Play className="w-4 h-4 mr-1" />
-                                  Start (15 min)
+                                  Complete (15 min)
                                 </>
                               )}
                             </Button>
@@ -660,14 +722,11 @@ export default function Home() {
                         </div>
                       </div>
 
-                      {/* Progress Bar for completed/in-progress */}
-                      {(quest.status === 'completed' || quest.progress) && (
+                      {/* Progress Bar for completed */}
+                      {quest.status === 'completed' && (
                         <div className="mt-4 pt-4 border-t border-purple-800/20">
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-xs text-purple-400/70">Progress</span>
-                            <span className="text-xs text-purple-300 font-mono">{quest.progress || 0}%</span>
-                          </div>
-                          <Progress value={quest.progress || 0} className="h-1.5" />
+                          <Progress value={100} className="h-2" />
+                          <p className="text-xs text-green-400/70 mt-1 text-right">100% Complete</p>
                         </div>
                       )}
                     </CardContent>
@@ -683,13 +742,13 @@ export default function Home() {
           <div className="max-w-md mx-auto space-y-3">
             <div className="flex items-center justify-center gap-2 text-purple-400/50 text-sm">
               <Lock className="w-4 h-4" />
-              <span>Your data stays on your device. Token is never stored permanently.</span>
+              <span>Your token never leaves memory. Auto-cleared on logout.</span>
             </div>
             <p className="text-xs text-purple-500/40">
-              This is an educational project to understand Discord APIs. Not affiliated with Discord Inc.
+              Educational project using Discord APIs. Not affiliated with Discord Inc.
             </p>
             <p className="text-xs text-purple-600/30">
-              MIT License © 2025 - Private Hobby Project
+              Private Hobby Project • MIT License © 2025
             </p>
           </div>
         </footer>
