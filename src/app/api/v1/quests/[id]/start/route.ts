@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifyApiKey, hasPermission, getApiKeyToken } from '@/lib/api-keys'
 import WebSocket from 'ws'
 
-// Active quest tracking
+// Active quest tracking - FIXED VERSION with real progress
 interface ActiveQuest {
   id: string
   questId: string
@@ -15,6 +15,12 @@ interface ActiveQuest {
   progress: number
   phase: string
   ws: WebSocket | null
+  
+  // NEW: Real Discord data
+  realProgressSeconds: number
+  targetSeconds: number
+  remainingSeconds: number
+  gatewayError?: string
 }
 
 const activeQuests = new Map<string, ActiveQuest>()
@@ -24,11 +30,10 @@ export function getActiveQuests() {
   return activeQuests
 }
 
-const QUEST_DURATION_MS = 15 * 60 * 1000 // 15 minutes
-const HEARTBEAT_INTERVAL = 41250 // ~41 seconds (Discord requirement)
-const PRESENCE_UPDATE_INTERVAL = 30000 // 30 seconds
+const HEARTBEAT_INTERVAL = 41250
+const PRESENCE_UPDATE_INTERVAL = 30000
 
-// POST /api/v1/quests/:id/start - Start quest completion
+// POST /api/v1/quests/:id/start - Start quest completion (FIXED)
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -36,7 +41,6 @@ export async function POST(
   try {
     const { id: questId } = await params
     
-    // Verify API key
     const apiKey = request.headers.get('x-api-key')
     if (!apiKey) {
       return NextResponse.json(
@@ -52,7 +56,6 @@ export async function POST(
 
     const keyData = keyCheck as NonNullable<typeof keyCheck>
 
-    // Check permission
     if (!hasPermission(keyData, 'quests:start')) {
       return NextResponse.json(
         { error: 'Requires quests:start permission', code: 'FORBIDDEN' },
@@ -60,7 +63,6 @@ export async function POST(
       )
     }
 
-    // Get token
     const token = getApiKeyToken(apiKey)
     if (!token) {
       return NextResponse.json(
@@ -69,14 +71,13 @@ export async function POST(
       )
     }
 
-    // Parse body for additional options
     const body = await request.json().catch(() => ({}))
     const { appId, gameName } = body
 
     // Check for existing active quest
     for (const [, quest] of activeQuests.entries()) {
       if (quest.userId === keyData.user.id && 
-          ['running', 'connecting', 'identifying'].includes(quest.status)) {
+          ['running', 'connecting', 'identifying', 'fetching_progress'].includes(quest.status)) {
         return NextResponse.json({
           error: 'Quest already in progress',
           code: 'QUEST_IN_PROGRESS',
@@ -86,7 +87,8 @@ export async function POST(
             gameName: quest.gameName,
             elapsed: Math.floor((Date.now() - quest.startTime) / 1000),
             progress: quest.progress,
-            phase: quest.phase
+            phase: quest.phase,
+            remainingTime: formatTime(quest.remainingSeconds)
           },
           statusEndpoint: `/api/v1/quests/${quest.questId}/status`,
           cancelEndpoint: `/api/v1/quests/${quest.questId}/cancel`
@@ -94,10 +96,8 @@ export async function POST(
       }
     }
 
-    // Resolve game info
     const gameInfo = resolveGameInfo(questId, appId, gameName)
     
-    // Create quest session
     const questSessionId = `v1_${Date.now()}_${Math.random().toString(36).substring(7)}`
     const now = Date.now()
 
@@ -108,16 +108,20 @@ export async function POST(
       gameName: gameInfo.gameName,
       userId: keyData.user.id,
       startTime: now,
-      endTime: now + QUEST_DURATION_MS,
+      endTime: now + (15 * 60 * 1000), // Will be updated after fetching real progress
       status: 'initializing',
       progress: 0,
-      phase: 'Initializing Gateway connection...',
-      ws: null
+      phase: 'Initializing...',
+      ws: null,
+      
+      // Real data (will be populated)
+      realProgressSeconds: 0,
+      targetSeconds: 900,
+      remainingSeconds: 900
     }
 
     activeQuests.set(questSessionId, quest)
 
-    // Start async completion process
     startGatewayCompletion(questSessionId, token, gameInfo)
 
     return NextResponse.json({
@@ -128,22 +132,21 @@ export async function POST(
         name: gameInfo.gameName,
         appId: gameInfo.appId
       },
-      estimatedTime: '15 minutes',
-      method: 'Discord Gateway WebSocket',
-      status: 'started',
+      method: 'Discord Gateway WebSocket (REAL)',
+      status: 'starting',
+      phases: [
+        '📊 Fetching real progress from Discord',
+        '🔌 Connecting to Gateway',
+        '🔐 Authenticating',
+        '🎮 Sending PresenceUpdate',
+        '⏱️ Tracking REAL remaining time',
+        '✅ Completing quest'
+      ],
       endpoints: {
         status: `/api/v1/quests/${questId}/status`,
         cancel: `/api/v1/quests/${questId}/cancel`
       },
-      phases: [
-        'Connecting to Discord Gateway',
-        'Authenticating with token',
-        'Sending PresenceUpdate (game activity)',
-        'Maintaining heartbeat connection',
-        'Tracking gameplay time (15 min)',
-        'Completing quest objectives'
-      ],
-      note: 'Quest completion runs server-side via real Discord Gateway connection'
+      note: 'Will use ACTUAL remaining time from Discord!'
     })
 
   } catch (error) {
@@ -155,7 +158,6 @@ export async function POST(
   }
 }
 
-// Resolve game information
 function resolveGameInfo(
   questId: string, 
   providedAppId?: string, 
@@ -191,7 +193,7 @@ function resolveGameInfo(
   return { appId: '1421154726023532544', gameName: 'EA SPORTS FC 26' }
 }
 
-// Main gateway-based completion engine
+// MAIN COMPLETION ENGINE - WITH REAL PROGRESS FETCHING
 async function startGatewayCompletion(
   questSessionId: string,
   token: string,
@@ -206,19 +208,47 @@ async function startGatewayCompletion(
   let progressInterval: NodeJS.Timeout | null = null
 
   try {
-    quest.status = 'connecting'
-    quest.phase = 'Connecting to Discord Gateway...'
+    // PHASE 0: Fetch REAL Progress
+    quest.status = 'fetching_progress'
+    quest.phase = '📊 Fetching real progress from Discord...'
+    
+    console.log(`[V1 PHASE 0] Fetching real progress for ${gameInfo.gameName}...`)
+    
+    const realData = await fetchRealProgress(token, quest.questId)
+    
+    if (realData) {
+      quest.realProgressSeconds = realData.progressSeconds || 0
+      quest.targetSeconds = realData.targetSeconds || 900
+      quest.remainingSeconds = Math.max(0, quest.targetSeconds - quest.realProgressSeconds)
+      quest.endTime = Date.now() + (quest.remainingSeconds * 1000)
+      quest.progress = (quest.realProgressSeconds / quest.targetSeconds) * 100
+      
+      console.log(`[V1 PHASE 0] ✅ Real progress: ${quest.realProgressSeconds}/${quest.targetSeconds}s (${Math.round(quest.progress)}%)`)
+      quest.phase = `✅ Fetched: ${Math.round(quest.progress)}% done, ${formatTime(quest.remainingSeconds)} left`
+    } else {
+      quest.phase = '⚠️ Using default timing (could not fetch)'
+      console.log('[V1 PHASE 0] ⚠️ Could not fetch real progress')
+    }
 
+    await delay(2000)
+
+    // PHASE 1: Connect to Gateway
+    quest.status = 'connecting'
+    quest.phase = '🔌 Connecting to Discord Gateway...'
+    
+    console.log('[V1 PHASE 1] Connecting...')
+    
     ws = await connectToGateway(token)
     if (!ws) throw new Error('Gateway connection failed')
 
     quest.ws = ws
     quest.status = 'identifying'
-    quest.phase = 'Authenticated! Setting up game presence...'
+    quest.phase = '🔐 Authenticated! Setting up presence...'
     await delay(2000)
 
+    // PHASE 2: Running
     quest.status = 'running'
-    quest.phase = `${gameInfo.gameName} activity tracking active...`
+    quest.phase = `🎮 ${gameInfo.gameName} activity tracking...`
 
     sendPresence(ws, gameInfo)
 
@@ -239,15 +269,23 @@ async function startGatewayCompletion(
       if (!q || q.status !== 'running') return
 
       const elapsed = Date.now() - q.startTime
-      q.progress = Math.min((elapsed / QUEST_DURATION_MS) * 100, 99.9)
+      const totalDuration = q.targetSeconds * 1000
+      const elapsedWithBase = q.realProgressSeconds * 1000 + elapsed
+      
+      q.progress = Math.min((elapsedWithBase / totalDuration) * 100, 99.9)
+      q.remainingSeconds = Math.max(0, totalDuration - elapsedWithBase)
 
-      if (q.progress < 15) q.phase = 'Establishing game session...'
-      else if (q.progress < 30) q.phase = 'Gameplay detected by Discord...'
-      else if (q.progress < 50) q.phase = 'Tracking playtime actively...'
-      else if (q.progress < 75) q.phase = 'Approaching quest objective...'
-      else if (q.progress < 90) q.phase = 'Finalizing quest data...'
-      else q.phase = 'Almost complete!'
+      if (q.progress < 15) q.phase = '🎮 Establishing session...'
+      else if (q.progress < 30) q.phase = '📡 Gameplay detected...'
+      else if (q.progress < 50) q.phase = '⏱️ Tracking playtime...'
+      else if (q.progress < 75) q.phase = '🎯 Approaching objective...'
+      else if (q.progress < 90) q.phase = '🔄 Finalizing...'
+      else q.phase = '🎉 Almost complete!'
     }, 3000)
+
+    // Wait for REAL remaining time
+    const waitMs = quest.remainingSeconds * 1000 + 10000
+    console.log(`[V1 PHASE 2] ⏱️ Waiting ${formatTime(quest.remainingSeconds)}...`)
 
     await new Promise<void>((resolve) => {
       const check = () => {
@@ -255,16 +293,16 @@ async function startGatewayCompletion(
         if (!q || q.status === 'failed' || Date.now() >= q.endTime) resolve()
         else setTimeout(check, 1000)
       }
-      setTimeout(check, QUEST_DURATION_MS + 10000)
+      setTimeout(check, waitMs)
     })
 
+    // Complete
     const finalQuest = activeQuests.get(questSessionId)
     if (finalQuest?.status === 'running') {
       finalQuest.status = 'completed'
       finalQuest.progress = 100
       finalQuest.phase = '✅ Quest Completed!'
-      
-      console.log(`[V1 QUEST COMPLETED] ${gameInfo.gameName}`)
+      console.log(`[V1 COMPLETED] ${gameInfo.gameName}`)
     }
 
   } catch (error) {
@@ -272,7 +310,8 @@ async function startGatewayCompletion(
     const failedQuest = activeQuests.get(questSessionId)
     if (failedQuest) {
       failedQuest.status = 'failed'
-      failedQuest.phase = `Error: ${error instanceof Error ? error.message : 'Unknown'}`
+      failedQuest.gatewayError = error instanceof Error ? error.message : 'Unknown'
+      failedQuest.phase = `❌ Error: ${failedQuest.gatewayError}`
     }
   } finally {
     if (heartbeatInterval) clearInterval(heartbeatInterval)
@@ -281,6 +320,40 @@ async function startGatewayCompletion(
     if (ws) {
       try { ws.close(1000, 'Complete') } catch {}
     }
+  }
+}
+
+// Fetch REAL progress from Discord
+async function fetchRealProgress(token: string, questId: string): Promise<any> {
+  try {
+    const res = await fetch('https://discord.com/api/v10/quests/@me', {
+      headers: { 'Authorization': token, 'User-Agent': 'DiscordQuestAPI/1.0' }
+    })
+
+    if (!res.ok) return null
+
+    const data = await res.json()
+    const quests = data.quests || []
+    const target = quests.find((q: any) => q.id === questId || q.config?.application?.id === questId)
+    
+    if (!target) return null
+
+    const userStatus = target.user_status || {}
+    const tasks = target.config?.task_config_v2?.tasks || {}
+    const taskEntry = Object.entries(tasks)[0]
+    const [, details] = taskEntry || ['UNKNOWN', {}]
+    const targetSec = (details as any)?.target || 900
+    const progressSec = userStatus.stream_progress_seconds || 0
+
+    return {
+      questId: target.id,
+      progressSeconds: progressSec,
+      targetSeconds: targetSec,
+      percentComplete: Math.round((progressSec / targetSec) * 100),
+      remainingSeconds: Math.max(0, targetSec - progressSec)
+    }
+  } catch (e) {
+    return null
   }
 }
 
@@ -293,7 +366,7 @@ function connectToGateway(token: string): Promise<WebSocket | null> {
     const timeout = setTimeout(() => {
       ws.close()
       resolve(null)
-    }, 15000)
+    }, 20000)
 
     ws.on('open', () => console.log('[V1 GATEWAY] Connected'))
 
@@ -315,11 +388,11 @@ function connectToGateway(token: string): Promise<WebSocket | null> {
         }
         
         if (msg.t === 'READY') {
-          console.log('[V1 GATEWAY] Ready!')
+          console.log('[V1 GATEWAY] 🎉 Ready!')
           resolve(ws)
         }
         
-        if (msg.op === 11) {}
+        if (msg.op === 11) {} // Heartbeat ACK
       } catch (e) {}
     })
 
@@ -344,10 +417,7 @@ function sendPresence(ws: WebSocket, game: { appId: string; gameName: string }) 
         details: `Playing ${game.gameName}`,
         state: 'In Game',
         timestamps: { start: Date.now() },
-        assets: {
-          large_image: game.appId,
-          large_text: game.gameName
-        },
+        assets: { large_image: game.appId, large_text: game.gameName },
         instance: true
       }],
       status: 'online',
@@ -358,4 +428,10 @@ function sendPresence(ws: WebSocket, game: { appId: string; gameName: string }) 
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function formatTime(totalSeconds: number): string {
+  const mins = Math.floor(totalSeconds / 60)
+  const secs = totalSeconds % 60
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
 }
