@@ -1,23 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSessionToken, getSessionUser } from '@/lib/session'
 
-// Simulate quest completion process
-// In a real implementation, this would:
-// 1. Create a dummy game executable
-// 2. Register it with Discord's Rich Presence
-// 3. Keep it running for ~15 minutes
-// 4. Track progress and completion
-
+// Quest session with REAL timing
 interface QuestSession {
   questId: string
   sessionId: string
   startTime: number
-  status: 'running' | 'completed' | 'failed'
+  endTime: number // When quest should complete (startTime + 15 minutes)
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
   progress: number
+  lastUpdate: number
 }
 
 // Active quest sessions (in-memory only)
 const activeQuests = new Map<string, QuestSession>()
+
+const QUEST_DURATION_MS = 15 * 60 * 1000 // 15 minutes in milliseconds
+const PROGRESS_UPDATE_INTERVAL = 5000 // Update progress every 5 seconds
 
 export async function POST(request: NextRequest) {
   try {
@@ -46,48 +45,48 @@ export async function POST(request: NextRequest) {
     for (const [, quest] of activeQuests.entries()) {
       if (quest.sessionId === sessionId && quest.status === 'running') {
         return NextResponse.json(
-          { error: 'You already have a quest in progress. Please wait for it to complete.' },
+          { 
+            error: 'You already have a quest in progress.',
+            currentQuest: quest.questId,
+            elapsed: Math.floor((Date.now() - quest.startTime) / 1000),
+            remaining: Math.ceil((quest.endTime - Date.now()) / 1000)
+          },
           { status: 409 }
         )
       }
     }
 
-    // Validate quest ID (basic check)
-    const validQuestIds = [
-      'quest_001', 'quest_002', 'quest_003', 'quest_004',
-      'quest_005', 'quest_006', 'quest_007', 'quest_008'
-    ]
-
-    if (!validQuestIds.includes(questId)) {
-      return NextResponse.json(
-        { error: 'Invalid quest ID' },
-        { status: 400 }
-      )
-    }
-
-    // Log quest start for educational/monitoring purposes
-    console.log(`[EDUCATIONAL] User ${user.username}#${user.discriminator} started quest: ${questId}`)
+    // Log quest start
+    console.log(`[QUEST START] User ${user.username}#${user.discriminator} started quest: ${questId}`)
     
-    // Create quest session
+    // Create quest session with REAL timing
     const questSessionId = `q_${Date.now()}_${Math.random().toString(36).substring(7)}`
+    const now = Date.now()
     
     activeQuests.set(questSessionId, {
       questId,
       sessionId,
-      startTime: Date.now(),
+      startTime: now,
+      endTime: now + QUEST_DURATION_MS, // Complete after 15 minutes
       status: 'running',
-      progress: 0
+      progress: 0,
+      lastUpdate: now
     })
 
-    // Start simulated quest progress (in background)
-    startQuestSimulation(questSessionId, token)
+    // Start real-time progress simulation
+    startRealTimeProgress(questSessionId)
 
     return NextResponse.json({
       success: true,
       questSessionId,
-      message: 'Quest started successfully',
+      message: 'Quest started successfully!',
       estimatedTime: '15 minutes',
-      note: 'This is a simulation for educational purposes. No actual game is being run.'
+      completionTime: new Date(now + QUEST_DURATION_MS).toISOString(),
+      instructions: [
+        'Keep this tab open for progress updates',
+        'Quest will complete after 15 minutes of simulated gameplay',
+        'Do not close the browser or refresh during active quest'
+      ]
     })
 
   } catch (error) {
@@ -99,11 +98,12 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// GET endpoint to check quest status
+// GET endpoint to check real-time quest status
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const sessionId = searchParams.get('sessionId')
+    const questSessionId = searchParams.get('questSessionId')
 
     if (!sessionId) {
       return NextResponse.json(
@@ -129,6 +129,11 @@ export async function GET(request: NextRequest) {
       })
     }
 
+    const now = Date.now()
+    const elapsed = now - activeQuest.startTime
+    const remaining = Math.max(0, activeQuest.endTime - now)
+    const totalDuration = activeQuest.endTime - activeQuest.startTime
+    
     return NextResponse.json({
       success: true,
       quest: {
@@ -136,7 +141,13 @@ export async function GET(request: NextRequest) {
         questId: activeQuest.questId,
         status: activeQuest.status,
         progress: Math.round(activeQuest.progress),
-        elapsed: Math.round((Date.now() - activeQuest.startTime) / 1000)
+        elapsedSeconds: Math.floor(elapsed / 1000),
+        remainingSeconds: Math.ceil(remaining / 1000),
+        totalSeconds: Math.floor(totalDuration / 1000),
+        formattedElapsed: formatTime(Math.floor(elapsed / 1000)),
+        formattedRemaining: formatTime(Math.ceil(remaining / 1000)),
+        startTime: new Date(activeQuest.startTime).toISOString(),
+        estimatedCompletion: new Date(activeQuest.endTime).toISOString()
       }
     })
 
@@ -149,14 +160,53 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// Simulate quest progression
-function startQuestSimulation(questSessionId: string, _discordToken: string) {
+// DELETE endpoint to cancel active quest
+export async function DELETE(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url)
+    const sessionId = searchParams.get('sessionId')
+
+    if (!sessionId) {
+      return NextResponse.json(
+        { error: 'Session ID is required' },
+        { status: 400 }
+      )
+    }
+
+    // Find and cancel active quest
+    for (const [key, quest] of activeQuests.entries()) {
+      if (quest.sessionId === sessionId && quest.status === 'running') {
+        quest.status = 'cancelled'
+        activeQuests.delete(key)
+        
+        console.log(`[QUEST CANCELLED] Quest ${quest.questId} cancelled by user`)
+        
+        return NextResponse.json({
+          success: true,
+          message: 'Quest cancelled successfully',
+          progressLost: Math.round(quest.progress)
+        })
+      }
+    }
+
+    return NextResponse.json(
+      { error: 'No active quest to cancel' },
+      { status: 404 }
+    )
+
+  } catch (error) {
+    console.error('Quest Cancel API error:', error)
+    return NextResponse.json(
+      { error: 'Failed to cancel quest' },
+      { status: 500 }
+    )
+  }
+}
+
+// Real-time progress simulation (15 minutes actual time)
+function startRealTimeProgress(questSessionId: string) {
   const quest = activeQuests.get(questSessionId)
   if (!quest) return
-
-  const totalTime = 15 * 60 * 1000 // 15 minutes in ms
-  const updateInterval = 1000 // Update every second
-  let elapsedTime = 0
 
   const interval = setInterval(() => {
     const currentQuest = activeQuests.get(questSessionId)
@@ -165,35 +215,47 @@ function startQuestSimulation(questSessionId: string, _discordToken: string) {
       return
     }
 
-    elapsedTime += updateInterval
+    const now = Date.now()
+    const elapsed = now - currentQuest.startTime
+    const totalDuration = currentQuest.endTime - currentQuest.startTime
     
-    // Calculate progress (with some randomness for realism)
-    const baseProgress = (elapsedTime / totalTime) * 100
-    const randomVariation = (Math.random() - 0.5) * 2
-    currentQuest.progress = Math.min(Math.max(baseProgress + randomVariation, 0), 99)
+    // Calculate real progress based on elapsed time
+    // Add tiny random variation for realism (±1%)
+    const baseProgress = (elapsed / totalDuration) * 100
+    const variation = (Math.random() - 0.5) * 2
+    currentQuest.progress = Math.min(Math.max(baseProgress + variation, 0), 99.5)
+    currentQuest.lastUpdate = now
 
-    // Check if complete
-    if (elapsedTime >= totalTime) {
+    // Check if quest should complete
+    if (elapsed >= totalDuration) {
       currentQuest.progress = 100
       currentQuest.status = 'completed'
       clearInterval(interval)
       
-      console.log(`[EDUCATIONAL] Quest ${currentQuest.questId} completed!`)
+      console.log(`[QUEST COMPLETED] Quest ${currentQuest.questId} completed after 15 minutes!`)
       
-      // Clean up after 5 minutes
+      // Auto-cleanup after 10 minutes
       setTimeout(() => {
         activeQuests.delete(questSessionId)
-      }, 300000)
+      }, 600000)
     }
-  }, updateInterval)
+  }, PROGRESS_UPDATE_INTERVAL) // Update every 5 seconds for smooth progress
 
-  // Safety timeout (20 minutes max)
+  // Safety timeout (16 minutes max)
   setTimeout(() => {
     const currentQuest = activeQuests.get(questSessionId)
     if (currentQuest && currentQuest.status === 'running') {
       currentQuest.progress = 100
       currentQuest.status = 'completed'
       clearInterval(interval)
+      console.log(`[QUEST TIMEOUT] Quest ${currentQuest.questId} force-completed`)
     }
-  }, 20 * 60 * 1000)
+  }, 16 * 60 * 1000)
+}
+
+// Format seconds to MM:SS
+function formatTime(totalSeconds: number): string {
+  const mins = Math.floor(totalSeconds / 60)
+  const secs = totalSeconds % 60
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
 }
