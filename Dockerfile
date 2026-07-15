@@ -6,8 +6,7 @@
 # Stage 1: Base with system dependencies
 FROM node:20-alpine AS base
 
-# Install Chromium dependencies
-# These are required for Puppeteer to run headless Chrome
+# Install Chromium dependencies (Alpine compatible packages)
 RUN apk add --no-cache \
     chromium \
     nss \
@@ -16,12 +15,20 @@ RUN apk add --no-cache \
     harfbuzz \
     ca-certificates \
     ttf-freefont \
-    # Additional fonts for proper rendering
     fontconfig \
     dbus \
-    gtk+ \
     # For video/codecs if needed
-    ffmpeg
+    ffmpeg \
+    # Additional deps for Puppeteer
+    udev \
+    libxcomposite \
+    libxdamage \
+    libxfixes \
+    libxrandr \
+    libgbm \
+    libpango-1.0 \
+    libcairo2 \
+    libasound2
 
 # Create non-root user early
 RUN addgroup --system --gid 1001 nodejs && \
@@ -58,7 +65,15 @@ RUN apk add --no-cache \
     ttf-freefont \
     fontconfig \
     dbus \
-    gtk+
+    udev \
+    libxcomposite \
+    libxdamage \
+    libxfixes \
+    libxrandr \
+    libgbm \
+    libpango-1.0 \
+    libcairo2 \
+    libasound2
 
 # Set environment variables for Puppeteer/Chromium
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
