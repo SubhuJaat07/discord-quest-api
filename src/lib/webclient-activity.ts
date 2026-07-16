@@ -500,13 +500,9 @@ export async function startWebClientQuest(
           const elapsed = Math.floor((Date.now() - session.startTime.getTime()) / 1000);
           session.totalSeconds = elapsed;
           
-          // Mark as confirmed if we've been running for more than 30 seconds
-          if (elapsed > 30 && !session.discordConfirmed) {
-            session.discordConfirmed = true;
-            console.log(`[WebClient] ✅ Activity likely confirmed by Discord (${elapsed}s elapsed)`);
-          }
-          
-          console.log(`[WebClient] ✅ Activity refreshed - ${elapsed}s elapsed, discordConfirmed=${session.discordConfirmed}`);
+          // DON'T auto-set discordConfirmed - that was FAKE!
+          // Only set it if we get REAL confirmation
+          console.log(`[WebClient] Activity sent via method - ${elapsed}s elapsed`);
         }
         
       } catch (err) {
