@@ -322,8 +322,12 @@ export async function startWebClientQuest(
     });
     
     // Wait for app to load
-    await page.waitForSelector('div[class*="app-"]', { timeout: 30000 })
-      .catch(() => console.log('[QUEST] App container not found, continuing...'));
+    try {
+      await page.waitForSelector('div[class*="app-"]', { timeout: 30000 })
+        .catch(() => console.log('[QUEST] App container not found, continuing...'));
+    } catch (e) {
+      console.log('[QUEST] App selector error, continuing:', e);
+    }
     
     console.log('[QUEST] ✅ Authenticated with Discord');
     
@@ -334,28 +338,56 @@ export async function startWebClientQuest(
     console.log('\n[QUEST] Step 2: Opening quest-home page (CRITICAL!)');
     session.status = 'opening_quest_page';
     
-    await page.goto('https://discord.com/quest-home', { 
-      waitUntil: 'networkidle2',
-      timeout: 60000 
-    });
+    try {
+      await page.goto('https://discord.com/quest-home', { 
+        waitUntil: 'domcontentloaded', // Changed from networkidle2 for faster load
+        timeout: 60000 
+      });
+    } catch (navError) {
+      console.error('[QUEST] Navigation error:', navError);
+      // Try again with just waitUntil load
+      try {
+        await page.goto('https://discord.com/quest-home', { 
+          waitUntil: 'load',
+          timeout: 30000 
+        });
+      } catch (e2) {
+        console.error('[QUEST] Second navigation attempt failed:', e2);
+        // Continue anyway - we might still have a working page
+      }
+    }
     
-    // Wait for quest page content (manual delay - waitForTimeout deprecated)
-    await new Promise(resolve => setTimeout(resolve, 3000)); // Let JS execute
-    
-    const questPageContent = await page.evaluate(() => {
-      return {
-        url: window.location.href,
-        title: document.title,
-        hasQuestContent: !!document.querySelector('[class*="quest"]') || 
-                         !!document.querySelector('[class*="reward"]') ||
-                         document.body.innerText.includes('quest'),
-        bodyPreview: document.body.innerText.substring(0, 500)
-      };
-    });
+    // Check if page is still valid
+    if (!page.isClosed()) {
+      // Wait for quest page content (manual delay - waitForTimeout deprecated)
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Reduced from 3s
+      
+      let questPageContent;
+      try {
+        questPageContent = await page.evaluate(() => {
+          return {
+            url: window.location.href,
+            title: document.title,
+            hasQuestContent: !!document.querySelector('[class*="quest"]') || 
+                             !!document.querySelector('[class*="reward"]') ||
+                             document.body.innerText.includes('quest'),
+            bodyPreview: document.body.innerText.substring(0, 500)
+          };
+        });
+      } catch (evalError) {
+        console.warn('[Quest] Page evaluate failed:', evalError);
+        questPageContent = { url: 'unknown', title: 'error', hasQuestContent: false, bodyPreview: '' };
+      }
+    } else {
+      console.warn('[QUEST] Page closed after navigation');
+      questPageContent = { url: 'closed', title: 'closed', hasQuestContent: false, bodyPreview: '' };
+    }
     
     console.log(`[QUEST] Quest page loaded: ${questPageContent.url}`);
     console.log(`[QUEST] Has quest content: ${questPageContent.hasQuestContent}`);
-    console.log(`[QUEST] Preview: ${questPageContent.bodyPreview.substring(0, 200)}...`);
+    if (questPageContent.bodyPreview) {
+      console.log(`[QUEST] Preview: ${questPageContent.bodyPreview.substring(0, 200)}...`);
+    }
     
     // ============================================
     // STEP 3: Inject Activity (Multiple Methods)
@@ -363,8 +395,12 @@ export async function startWebClientQuest(
     console.log('\n[QUEST] Step 3: Setting up activity injection...');
     session.status = 'injecting_activity';
     
-    // Method A: Hook WebSocket and inject activity
-    const activitySetupResult = await page.evaluate(({ applicationId, game }) => {
+    // Method A: Hook WebSocket and inject activity (with error handling)
+    let activitySetupResult = false;
+    
+    if (!page.isClosed()) {
+      try {
+        activitySetupResult = await page.evaluate(({ applicationId, game }) => {
       return new Promise<boolean>((resolve) => {
         console.log('[Activity] Starting multi-method activity setup...');
         
@@ -532,6 +568,13 @@ export async function startWebClientQuest(
         
       });
     }, { applicationId: appId, game: gameName });
+      } catch (activityError) {
+        console.error('[QUEST] Activity setup error:', activityError);
+        activitySetupResult = false;
+      }
+    } else {
+      console.warn('[QUEST] Page closed before activity setup');
+    }
     
     console.log(`[QUEST] Activity setup result: ${activitySetupResult}`);
     
