@@ -14,9 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 // Version tracking for deployments
-export const APP_VERSION = "1.0.2"
+export const APP_VERSION = "1.0.3-DEBUG"
 export const BUILD_DATE = new Date().toISOString()
-export const BUILD_NUMBER = "003"
+export const BUILD_NUMBER = "004"
 
 export const metadata: Metadata = {
   title: `Discord Quest Tool v${APP_VERSION}`,

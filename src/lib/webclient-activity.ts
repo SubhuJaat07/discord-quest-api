@@ -163,6 +163,33 @@ export async function startWebClientQuest(
     const page = await browser.newPage();
     session.page = page;
     
+    // 🔍 DEBUG: Capture ALL console logs from browser
+    page.on('console', (msg) => {
+      const text = msg.text();
+      if (text.includes('[Hook]') || 
+          text.includes('[Auth]') || 
+          text.includes('[Interval]') ||
+          text.includes('WebSocket') ||
+          text.includes('gateway') ||
+          text.includes('activity') ||
+          text.includes('error') ||
+          text.includes('Error')) {
+        console.log(`[BROWSER] ${text}`);
+      }
+    });
+    
+    // 🔍 DEBUG: Capture page errors
+    page.on('pageerror', (err) => {
+      console.error(`[PAGE ERROR] ${err.message}`);
+    });
+    
+    // 🔍 DEBUG: Capture request failures
+    page.on('requestfailed', (req) => {
+      console.error(`[REQ FAILED] ${req.url()} - ${req.failure()?.errorText}`);
+    });
+    
+    console.log('[WebClient] ✅ Debug logging enabled');
+    
     // Set up request interception to inject auth token
     await page.setRequestInterception(true);
     
