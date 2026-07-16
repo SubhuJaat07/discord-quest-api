@@ -1,25 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSessionToken, getSessionUser } from '@/lib/session'
 import {
-  startChromiumQuest,
-  getChromiumSessionStatus,
-  cancelChromiumSession,
-  getActiveSessions
-} from '@/lib/chromium-client'
+  startWebClientQuest,
+  getWebClientSessionStatus,
+  cancelWebClientSession,
+  getActiveWebClientSessions
+} from '@/lib/webclient-activity'
 
 // ============================================
-// 🚀 REAL Chromium Quest Completion API
+// 🌐 DISCORD WEB CLIENT ACTIVITY INJECTION
 // ============================================
 // 
-// This endpoint uses PUPPETEER + REAL CHROMIUM BROWSER
-// No more fake RPC/WebSocket simulation!
+// This endpoint uses PUPPETEER + DISCORD'S OWN WEB CLIENT
+// We don't fake RPC - we USE Discord's client to send activity!
 //
 // What actually happens:
 // 1. Launches REAL headless Chrome browser
-// 2. Opens Discord.com with your token
-// 3. Injects activity scripts into Discord's JS
-// 4. Sends presence updates every 25 seconds
-// 5. Discord thinks game is running locally → QUEST COMPLETE!
+// 2. Opens Discord.com with your token (legitimate login)
+// 3. Hooks into Discord's WebSocket connection
+// 4. Injects game activity into presence updates
+// 5. Discord sees it as legitimate gameplay → QUEST COMPLETE!
 // ============================================
 
 interface GameInfo {
@@ -39,13 +39,12 @@ const KNOWN_GAMES: Record<string, GameInfo> = {
   '1461154307171811401': { appId: '1461154307171811401', gameName: 'Arknights: Endfield', requiredMinutes: 15 },
 }
 
-// POST - Start Quest with REAL Chromium Browser
+// POST - Start Quest with Web Client Activity Injection
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     const { questId, gameId, appName } = body
 
-    // Get user session token
     const sessionToken = await getSessionToken()
     if (!sessionToken) {
       return NextResponse.json(
@@ -54,7 +53,6 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Get user info
     const user = await getSessionUser()
     if (!user) {
       return NextResponse.json(
@@ -71,10 +69,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Check for existing active sessions for this user
-    const activeSessions = getActiveSessions()
+    const activeSessions = getActiveWebClientSessions()
     for (const [, session] of activeSessions.entries()) {
       if (session.userId === user.id && 
-          ['launching', 'authenticating', 'active'].includes(session.status)) {
+          ['launching', 'authenticating', 'setting_activity', 'running'].includes(session.status)) {
         return NextResponse.json({
           success: false,
           error: 'Quest already in progress',
@@ -83,13 +81,11 @@ export async function POST(request: NextRequest) {
             id: session.id,
             questId: session.questId,
             gameName: session.gameName,
-            elapsed: Math.floor((Date.now() - session.startTime) / 1000),
-            progress: Math.round(session.progress * 100) / 100,
-            phase: session.phase,
+            elapsed: Math.floor((Date.now() - session.startTime.getTime()) / 1000),
             status: session.status,
-            method: '🚀 Chromium Browser'
+            method: '🌐 Discord Web Client'
           },
-          message: `Already running ${session.gameName} - ${session.progress.toFixed(1)}% complete`
+          message: `Already running ${session.gameName} - ${session.totalSeconds}s elapsed`
         }, { status: 409 })
       }
     }
@@ -97,53 +93,59 @@ export async function POST(request: NextRequest) {
     // Resolve game info
     const gameInfo = resolveGameInfo(questId, gameId, appName)
 
-    console.log(`[QUEST START] Starting Chromium quest for user ${user.id}: ${gameInfo.gameName}`)
+    console.log(`[QUEST START] Starting WebClient quest for user ${user.id}: ${gameInfo.gameName}`)
 
-    // 🚀 START REAL CHROMIUM BROWSER AUTOMATION
-    const result = await startChromiumQuest(
+    // 🌐 START WEB CLIENT ACTIVITY INJECTION
+    const result = await startWebClientQuest(
       sessionToken,
       questId,
       gameInfo.appId,
       gameInfo.gameName,
       user.id,
       {
-        debugLogs: true,
-        stealthMode: true,
         headless: true,
-        requiredMinutes: gameInfo.requiredMinutes
+        timeout: 60000,
+        activityUpdateInterval: 25000
       }
     )
+
+    if (!result.success) {
+      return NextResponse.json({
+        success: false,
+        error: result.message,
+        code: 'START_ERROR'
+      }, { status: 500 })
+    }
 
     return NextResponse.json({
       success: true,
       sessionId: result.sessionId,
-      method: '🚀 Real Chromium Browser',
-      message: `🚀 Starting ${gameInfo.gameName} with REAL browser...`,
+      method: '🌐 Discord Web Client Injection',
+      message: `🌐 Starting ${gameInfo.gameName} via Discord's own client...`,
       
       questDetails: {
         questId,
         gameId: gameInfo.appId,
         gameName: gameInfo.gameName,
         requiredMinutes: gameInfo.requiredMinutes,
-        estimatedCompletion: result.estimatedCompletion
       },
 
       whatHappensNext: [
-        '🌐 Launching REAL Chromium browser...',
-        '🔐 Authenticating with your Discord token...',
-        '🎮 Opening Discord.com in browser...',
-        '💉 Injecting activity detection script...',
-        '💓 Sending presence updates every 25 seconds...',
+        '🌐 Launching Chromium browser...',
+        '📂 Opening discord.com/app...',
+        '🔐 Injecting your auth token...',
+        '🎣 Hooking into Discord WebSocket...',
+        '💉 Injecting game activity into presence...',
         `⏱️ After ~${gameInfo.requiredMinutes} minutes → QUEST COMPLETE!`
       ],
 
       technicalDetails: {
-        engine: 'Puppeteer + Headless Chrome',
-        method: 'Browser Automation (NOT RPC)',
-        detectionType: 'Local Activity Simulation',
+        engine: 'Puppeteer + Discord Web Client',
+        method: 'WebSocket Hook + Activity Injection',
+        detectionType: 'Legitimate Presence Update',
         stealthMode: true,
         presenceInterval: '25 seconds',
-        heartbeatInterval: '40 seconds'
+        whyThisWorks: "We use Discord's OWN client - not faking anything!"
       },
 
       endpoints: {
@@ -154,9 +156,9 @@ export async function POST(request: NextRequest) {
       },
 
       warnings: [
-        '⚠️ This uses REAL browser - do not refresh repeatedly',
-        '⚠️ Browser will run for full duration',
-        '⚠️ Progress is tracked by Discord in real-time'
+        '✅ This uses Discord real web client',
+        '✅ Activity appears as legitimate gameplay',
+        '⚠️ Keep this tab open for progress'
       ]
     })
 
@@ -186,7 +188,7 @@ export async function GET(request: NextRequest) {
       }, { status: 400 })
     }
 
-    const sessionStatus = getChromiumSessionStatus(sessionId)
+    const sessionStatus = getWebClientSessionStatus(sessionId)
     
     if (!sessionStatus) {
       return NextResponse.json({
@@ -200,18 +202,15 @@ export async function GET(request: NextRequest) {
       }, { status: 404 })
     }
 
-    // Calculate timing
-    const now = Date.now()
-    const startTime = sessionStatus.startTime as number || now
-    const endTime = sessionStatus.endTime as number || now
-    const elapsed = Math.floor((now - startTime) / 1000)
-    const remaining = Math.max(0, Math.ceil((endTime - now) / 1000))
-    const progress = sessionStatus.progress || Math.min((elapsed / 900) * 100, 99.9)
+    const elapsed = sessionStatus.totalSeconds
+    const requiredSeconds = 900 // 15 minutes default
+    const progress = Math.min((elapsed / requiredSeconds) * 100, 99.9)
+    const remaining = Math.max(0, requiredSeconds - elapsed)
 
     return NextResponse.json({
       success: true,
-      status: sessionStatus.status as string,
-      method: '🚀 Chromium Browser Automation',
+      status: sessionStatus.status,
+      method: '🌐 Discord Web Client Injection',
       
       quest: {
         questId: sessionStatus.questId,
@@ -225,21 +224,19 @@ export async function GET(request: NextRequest) {
         elapsedFormatted: formatTime(elapsed),
         remainingSeconds: remaining,
         remainingFormatted: formatTime(remaining),
-        totalRequired: sessionStatus.requiredSeconds || 900
+        totalRequired: requiredSeconds
       },
 
       browser: {
-        phase: sessionStatus.phase as string,
-        presenceUpdates: sessionStatus.presenceUpdates || 0,
-        discordConfirmedProgress: sessionStatus.discordProgress || 0,
-        lastHeartbeat: sessionStatus.lastHeartbeat ? new Date(sessionStatus.lastHeartbeat as number).toISOString() : null
+        phase: sessionStatus.status,
+        lastActivityUpdate: sessionStatus.lastActivityUpdate?.toISOString() || null,
+        discordConfirmed: sessionStatus.discordConfirmed || false
       },
 
       timing: {
-        startedAt: new Date(startTime).toISOString(),
-        estimatedCompletion: new Date(endTime).toISOString(),
+        startedAt: sessionStatus.startTime.toISOString(),
         currentTime: new Date().toISOString(),
-        isOvertime: now > endTime
+        totalElapsed: `${elapsed}s`
       },
 
       actions: {
@@ -247,7 +244,7 @@ export async function GET(request: NextRequest) {
         refresh: `/api/quest/status?sessionId=${sessionId}`
       },
 
-      message: getStatusMessage(sessionStatus.status as string, progress)
+      message: getStatusMessage(sessionStatus.status, progress)
     })
 
   } catch (error) {
@@ -271,7 +268,7 @@ export async function DELETE(request: NextRequest) {
       }, { status: 400 })
     }
 
-    const sessionStatus = getChromiumSessionStatus(sessionId)
+    const sessionStatus = getWebClientSessionStatus(sessionId)
     
     if (!sessionStatus) {
       return NextResponse.json({
@@ -280,9 +277,8 @@ export async function DELETE(request: NextRequest) {
       }, { status: 404 })
     }
 
-    // Check if already in terminal state
-    const currentStatus = sessionStatus.status as string
-    if (['completed', 'error', 'cancelled'].includes(currentStatus)) {
+    const currentStatus = sessionStatus.status
+    if (['completed', 'error'].includes(currentStatus)) {
       return NextResponse.json({
         success: false,
         error: `Cannot cancel - already ${currentStatus}`,
@@ -290,8 +286,7 @@ export async function DELETE(request: NextRequest) {
       }, { status: 400 })
     }
 
-    // Perform cancellation
-    const cancelled = await cancelChromiumSession(sessionId)
+    const cancelled = await cancelWebClientSession(sessionId)
 
     if (!cancelled) {
       return NextResponse.json(
@@ -300,28 +295,24 @@ export async function DELETE(request: NextRequest) {
       )
     }
 
-    const elapsed = Math.floor((Date.now() - ((sessionStatus.startTime as number) || Date.now())) / 1000)
+    const elapsed = sessionStatus.totalSeconds
 
     return NextResponse.json({
       success: true,
       status: 'cancelling',
-      message: '🛑 Stopping Chromium browser...',
+      message: '🛑 Closing browser and stopping activity...',
       
       cancelledSession: {
         sessionId,
         gameName: sessionStatus.gameName,
-        timeElapsed: formatTime(elapsed),
-        progressLost: `${Math.round((sessionStatus.progress || 0) * 100) / 100}%`
+        timeElapsed: formatTime(elapsed)
       },
 
       whatHappens: [
         '🔒 Closing browser instance...',
-        '⏹️ Stopping presence updates...',
+        '⏹️ Stopping activity injection...',
         '🧹 Cleaning up resources...'
       ],
-
-      warning: '⚠️ Progress lost - Discord requires continuous activity!',
-      nextSteps: ['Start a new quest anytime']
     })
 
   } catch (error) {
@@ -363,21 +354,20 @@ function formatTime(totalSeconds: number): string {
 function getStatusMessage(status: string, progress: number): string {
   switch (status) {
     case 'launching':
-      return '🌐 Launching Chromium browser...'
+      return '🌐 Launching browser...'
     case 'authenticating':
-      return '🔐 Logging into Discord...'
-    case 'active':
-      if (progress < 20) return '📊 Establishing gameplay detection...'
-      if (progress < 40) return '🎮 Discord tracking activity...'
-      if (progress < 60) return '⏱️ Good progress...'
+      return '🔐 Authenticating with Discord...'
+    case 'setting_activity':
+      return '💉 Injecting activity into Discord client...'
+    case 'running':
+      if (progress < 20) return '🎮 Discord detecting gameplay...'
+      if (progress < 50) return '⏱️ Good progress...'
       if (progress < 80) return '🎯 Almost there...'
       return '🔄 Finalizing...'
     case 'completed':
       return '✅ Quest COMPLETE! Claim reward in Discord!'
     case 'error':
       return '❌ Something went wrong'
-    case 'cancelled':
-      return '🛑 Cancelled by user'
     default:
       return `Status: ${status}`
   }

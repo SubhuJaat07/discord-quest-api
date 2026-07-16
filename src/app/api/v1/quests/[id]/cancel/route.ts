@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyApiKey, hasPermission } from '@/lib/api-keys'
 import { 
-  cancelChromiumSession, 
-  getChromiumSessionStatus,
-  getActiveSessions,
-  ChromiumQuestSession 
-} from '@/lib/chromium-client'
+  cancelWebClientSession, 
+  getWebClientSessionStatus,
+  getActiveWebClientSessions,
+  WebClientSession
+} from '@/lib/webclient-activity'
 
-// DELETE /api/v1/quests/:id/cancel - Cancel active Chromium quest session
+// DELETE /api/v1/quests/:id/cancel - Cancel active WebClient quest session
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -41,8 +41,7 @@ export async function DELETE(
 
     // If specific session ID provided, cancel that exact session
     if (sessionParam) {
-      // Verify this session belongs to this user
-      const sessionStatus = getChromiumSessionStatus(sessionParam)
+      const sessionStatus = getWebClientSessionStatus(sessionParam)
       
       if (!sessionStatus) {
         return NextResponse.json(
@@ -51,16 +50,15 @@ export async function DELETE(
         )
       }
       
-      if ((sessionStatus.userId as string) !== keyData.user.id) {
+      if (sessionStatus.userId !== keyData.user.id) {
         return NextResponse.json(
           { error: 'You can only cancel your own sessions', code: 'FORBIDDEN' },
           { status: 403 }
         )
       }
 
-      // Check if session is already in a terminal state
       const currentStatus = sessionStatus.status
-      if (['completed', 'error', 'cancelled'].includes(currentStatus || '')) {
+      if (['completed', 'error'].includes(currentStatus)) {
         return NextResponse.json({
           success: false,
           error: `Cannot cancel session - it is already ${currentStatus}`,
@@ -70,8 +68,7 @@ export async function DELETE(
         }, { status: 400 })
       }
 
-      // Perform cancellation
-      const cancelled = await cancelChromiumSession(sessionParam)
+      const cancelled = await cancelWebClientSession(sessionParam)
 
       if (!cancelled) {
         return NextResponse.json(
@@ -89,13 +86,12 @@ export async function DELETE(
         
         whatHappens: [
           'Browser is being closed',
-          'Presence updates are stopping',
+          'Activity injection is stopping',
           'Session will be cleaned up shortly'
         ],
         
         progressLost: {
-          elapsedSeconds: Math.floor((Date.now() - ((sessionStatus.startTime as number) || Date.now())) / 1000),
-          progressPercent: Math.round((sessionStatus.progress || 0) * 100) / 100,
+          elapsedSeconds: sessionStatus.totalSeconds,
           note: 'This progress will NOT count toward quest completion'
         },
         
@@ -103,20 +99,18 @@ export async function DELETE(
           '✅ You can start a new quest immediately',
           '📊 Use GET /api/v1/quests/:id/status to verify cancellation',
           '🔄 Use POST /api/v1/quests/:id/start to start again'
-        ],
-        
-        warning: '⚠️ Any time accumulated during this session will not count toward quest completion. Discord requires continuous gameplay detection.'
+        ]
       })
     }
 
     // No session ID - find and cancel all active sessions for this user+quest
-    const activeSessionsMap = getActiveSessions()
+    const activeSessionsList = getActiveWebClientSessions()
     const sessionsToCancel: string[] = []
     
-    for (const [, session] of activeSessionsMap.entries()) {
+    for (const session of activeSessionsList) {
       if (session.userId === keyData.user.id && 
           (session.questId === questId || session.id === questId) &&
-          ['launching', 'authenticating', 'active', 'paused'].includes(session.status)) {
+          ['launching', 'authenticating', 'setting_activity', 'running'].includes(session.status)) {
         sessionsToCancel.push(session.id)
       }
     }
@@ -137,7 +131,7 @@ export async function DELETE(
 
     // Cancel all found sessions
     const cancelResults = await Promise.allSettled(
-      sessionsToCancel.map(id => cancelChromiumSession(id))
+      sessionsToCancel.map(id => cancelWebClientSession(id))
     )
 
     const successfulCancels = cancelResults.filter(r => r.status === 'fulfilled' && r.value).length
@@ -165,7 +159,7 @@ export async function DELETE(
     })
 
   } catch (error) {
-    console.error('[CHROMIUM CANCEL] Error:', error)
+    console.error('[WEBCLIENT CANCEL] Error:', error)
     return NextResponse.json(
       { error: 'Failed to cancel quest', code: 'INTERNAL_ERROR', details: error instanceof Error ? error.message : 'Unknown' },
       { status: 500 }

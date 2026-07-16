@@ -1,23 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyApiKey, hasPermission, getApiKeyToken } from '@/lib/api-keys'
 import {
-  startChromiumQuest,
-  getChromiumSessionStatus,
-  getActiveSessions
-} from '@/lib/chromium-client'
+  startWebClientQuest,
+  getWebClientSessionStatus,
+  getActiveWebClientSessions
+} from '@/lib/webclient-activity'
 
 // ============================================
-// 🚀 Chromium-Based Quest Completion API
+// 🌐 Discord Web Client Activity Injection API
 // ============================================
 // 
-// This endpoint starts a REAL browser automation session using Puppeteer.
-// It launches an actual Chromium instance that:
-// 1. Opens Discord web app with user's token
-// 2. Injects activity scripts that hook into Discord's internal systems
-// 3. Sends presence updates that mimic real game detection
-// 4. Maintains connection for required duration (default 15 min)
+// This endpoint uses Puppeteer to control Discord's ACTUAL web client
+// and inject game activity through Discord's own JavaScript runtime.
 //
-// This is NOT a simulation - it uses real browser automation!
+// What actually happens:
+// 1. Launches REAL headless Chrome browser
+// 2. Opens Discord.com with user's token (legitimate login)
+// 3. Hooks into Discord's WebSocket connection
+// 4. Injects game activity into presence updates (op: 3)
+// 5. Discord sees it as legitimate gameplay → QUEST COMPLETE!
 // ============================================
 
 interface GameInfo {
@@ -26,7 +27,7 @@ interface GameInfo {
   requiredMinutes: number
 }
 
-// POST - Start Quest Completion via Chromium Browser
+// POST - Start Quest Completion via Web Client Injection
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -72,10 +73,10 @@ export async function POST(
     const { appId, gameName, customConfig } = body
 
     // Check for existing active sessions for this user
-    const activeSessions = getActiveSessions()
+    const activeSessions = getActiveWebClientSessions()
     for (const [, session] of activeSessions.entries()) {
       if (session.userId === keyData.user.id && 
-          ['launching', 'authenticating', 'active'].includes(session.status)) {
+          ['launching', 'authenticating', 'setting_activity', 'running'].includes(session.status)) {
         return NextResponse.json({
           error: 'Quest already in progress',
           code: 'QUEST_IN_PROGRESS',
@@ -83,10 +84,9 @@ export async function POST(
             id: session.id,
             questId: session.questId,
             gameName: session.gameName,
-            elapsed: Math.floor((Date.now() - session.startTime) / 1000),
-            progress: Math.round(session.progress * 100) / 100,
-            phase: session.phase,
-            status: session.status
+            elapsed: Math.floor((Date.now() - session.startTime.getTime()) / 1000),
+            status: session.status,
+            method: '🌐 Web Client'
           },
           hint: 'Use the status endpoint to check progress or cancel endpoint to stop it'
         }, { status: 409 })
@@ -96,8 +96,8 @@ export async function POST(
     // Resolve game info
     const gameInfo = resolveGameInfo(questId, appId, gameName)
 
-    // Start the Chromium quest completion
-    const result = await startChromiumQuest(
+    // Start the WebClient quest completion
+    const result = await startWebClientQuest(
       token,
       questId,
       gameInfo.appId,
@@ -105,69 +105,62 @@ export async function POST(
       keyData.user.id,
       customConfig ? {
         ...customConfig,
-        debugLogs: true,
-        stealthMode: true
+        headless: true,
+        timeout: 60000,
+        activityUpdateInterval: 25000
       } : undefined
     )
+
+    if (!result.success) {
+      return NextResponse.json({
+        success: false,
+        error: result.message,
+        code: 'START_FAILED'
+      }, { status: 500 })
+    }
 
     return NextResponse.json({
       success: result.success,
       sessionId: result.sessionId,
-      message: `🚀 Starting ${gameInfo.gameName} quest completion...`,
+      message: `🌐 Starting ${gameInfo.gameName} via Discord Web Client...`,
       
       questDetails: {
         questId,
         gameId: gameInfo.appId,
         gameName: gameInfo.gameName,
         requiredMinutes: gameInfo.requiredMinutes,
-        estimatedCompletion: result.estimatedCompletion
       },
       
       whatHappensNext: [
-        '🌐 Real Chromium browser is launching',
-        '🔐 Your token is being used to authenticate',
-        '🎮 Activity injection script will be loaded',
-        '💓 Presence updates will be sent every 25 seconds',
-        `⏱️ After ~${gameInfo.requiredMinutes} minutes, quest should complete`
+        '🌐 Launching Chromium browser...',
+        '📂 Opening discord.com/app...',
+        '🔐 Injecting your auth token...',
+        '🎣 Hooking into Discord WebSocket...',
+        '💉 Injecting game activity into presence...',
+        `⏱️ After ~${gameInfo.requiredMinutes} minutes → QUEST COMPLETE!`
       ],
       
       technicalDetails: {
-        method: 'Puppeteer Browser Automation',
-        detectionType: 'Local Activity Simulation',
+        method: 'Discord Web Client + WebSocket Hook',
+        detectionType: 'Legitimate Presence Update (op: 3)',
         presenceInterval: '25 seconds',
-        heartbeatInterval: '40 seconds',
-        stealthMode: true
+        whyThisWorks: "Uses Discord's OWN client - not faking!"
       },
       
       endpoints: {
-        status: result.endpoints.status,
-        cancel: result.endpoints.cancel,
+        status: `/api/v1/quests/${questId}/status?session=${result.sessionId}`,
+        cancel: `/api/v1/quests/${questId}/cancel?session=${result.sessionId}`,
         docs: '/api/v1/docs'
-      },
-      
-      warnings: [
-        '⚠️ Keep this tab/session open or use status endpoint to monitor',
-        '⚠️ Do not start multiple quests simultaneously',
-        '⚠️ Token is used only for authentication, not stored permanently'
-      ]
+      }
     })
 
   } catch (error) {
-    console.error('[CHROMIUM START] Error:', error)
-    
-    // Provide helpful error message
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    console.error('[WEBCLIENT START] Error:', error)
     
     return NextResponse.json({
       error: 'Failed to start quest completion',
       code: 'START_FAILED',
-      details: errorMessage,
-      commonCauses: [
-        'Chromium not available in environment',
-        'Invalid or expired Discord token',
-        'Rate limited by Discord',
-        'Network connectivity issues'
-      ],
+      details: error instanceof Error ? error.message : 'Unknown error',
       suggestion: 'Check server logs for detailed error information'
     }, { status: 500 })
   }
@@ -184,7 +177,7 @@ export async function GET(
     
     // If session ID provided, get specific session status
     if (sessionParam) {
-      const status = getChromiumSessionStatus(sessionParam)
+      const status = getWebClientSessionStatus(sessionParam)
       if (!status) {
         return NextResponse.json({
           error: 'Session not found or expired',
@@ -192,11 +185,35 @@ export async function GET(
         }, { status: 404 })
       }
       
+      const elapsed = status.totalSeconds
+      const requiredSeconds = 900
+      const progress = Math.min((elapsed / requiredSeconds) * 100, 99.9)
+      
       return NextResponse.json({
         success: true,
-        ...status,
-        currentTime: Date.now(),
-        timeRemaining: Math.max(0, ((status.endTime || 0) - Date.now()) / 1000)
+        sessionId: status.id,
+        status: status.status,
+        method: '🌐 Discord Web Client Injection',
+        
+        quest: {
+          questId: status.questId,
+          gameName: status.gameName,
+          appId: status.appId
+        },
+
+        progress: {
+          percent: Math.round(progress * 100) / 100,
+          elapsedSeconds: elapsed,
+          remainingSeconds: Math.max(0, requiredSeconds - elapsed)
+        },
+        
+        timing: {
+          startedAt: status.startTime.toISOString(),
+          lastActivityUpdate: status.lastActivityUpdate?.toISOString(),
+          currentTime: new Date().toISOString()
+        },
+        
+        discordConfirmed: status.discordConfirmed || false
       })
     }
     
@@ -217,7 +234,7 @@ export async function GET(
     const keyData = keyCheck as NonNullable<typeof keyData>
     
     // Find active sessions for this user and quest
-    const activeSessions = getActiveSessions()
+    const activeSessions = getActiveWebClientSessions()
     const userSessions = Array.from(activeSessions.values())
       .filter(s => s.userId === keyData.user.id && s.questId === questId)
     
@@ -234,15 +251,13 @@ export async function GET(
       activeSessions: userSessions.map(s => ({
         id: s.id,
         status: s.status,
-        progress: Math.round(s.progress * 100) / 100,
-        phase: s.phase,
-        elapsed: Math.floor((Date.now() - s.startTime) / 1000),
-        startedAt: new Date(s.startTime).toISOString()
+        totalSeconds: s.totalSeconds,
+        startedAt: s.startTime.toISOString()
       }))
     })
     
   } catch (error) {
-    console.error('[CHROMIUM STATUS] Error:', error)
+    console.error('[WEBCLIENT STATUS] Error:', error)
     return NextResponse.json(
       { error: 'Failed to get status', code: 'STATUS_ERROR' },
       { status: 500 }
@@ -259,7 +274,6 @@ function resolveGameInfo(
   providedAppId?: string, 
   providedGameName?: string
 ): GameInfo {
-  // Use provided values if both given
   if (providedAppId && providedGameName) {
     return {
       appId: providedAppId,
@@ -268,113 +282,30 @@ function resolveGameInfo(
     }
   }
 
-  // Known games database with their actual requirements
   const KNOWN_GAMES: Record<string, GameInfo> = {
-    // EA Sports FC 26
-    '1421154726023532544': { 
-      appId: '1421154726023532544', 
-      gameName: 'EA SPORTS FC 26',
-      requiredMinutes: 15
-    },
-    // Where Winds Meet
-    '1437509662303059998': { 
-      appId: '1437509662303059998', 
-      gameName: 'Where Winds Meet',
-      requiredMinutes: 15
-    },
-    // Neverness to Everness
-    '1470616226995765409': { 
-      appId: '1470616226995765409', 
-      gameName: 'Neverness to Everness',
-      requiredMinutes: 15
-    },
-    // Roblox
-    '363445589247131668': { 
-      appId: '363445589247131668', 
-      gameName: 'Roblox',
-      requiredMinutes: 15
-    },
-    // Zenless Zone Zero
-    '1257819671114289184': { 
-      appId: '1257819671114289184', 
-      gameName: 'Zenless Zone Zero',
-      requiredMinutes: 15
-    },
-    // VALORANT
-    '700136079562375258': { 
-      appId: '700136079562375258', 
-      gameName: 'VALORANT',
-      requiredMinutes: 15
-    },
-    // Wuthering Waves
-    '1247227126416146462': { 
-      appId: '1247227126416146462', 
-      gameName: 'Wuthering Waves',
-      requiredMinutes: 15
-    },
-    // Arknights: Endfield
-    '1461154307171811401': { 
-      appId: '1461154307171811401', 
-      gameName: 'Arknights: Endfield',
-      requiredMinutes: 15
-    },
-    // Old School RuneScape
-    '1180205756998488064': { 
-      appId: '1180205756998488064', 
-      gameName: 'Old School RuneScape',
-      requiredMinutes: 15
-    },
-    // Warframe
-    '1402418586244612216': { 
-      appId: '1402418586244612216', 
-      gameName: 'Warframe',
-      requiredMinutes: 15
-    },
-    // Yu-Gi-Oh! Master Duel
-    '1140238527980916757': { 
-      appId: '1140238527980916757', 
-      gameName: 'Yu-Gi-Oh! Master Duel',
-      requiredMinutes: 15
-    },
-    // Delta Force
-    '1314682894106497096': { 
-      appId: '1314682894106497096', 
-      gameName: 'Delta Force',
-      requiredMinutes: 15
-    },
-    // Escape the Backrooms
-    '1162085521816813721': { 
-      appId: '1162085521816813721', 
-      gameName: 'Escape the Backrooms',
-      requiredMinutes: 15
-    },
-    // EMPULSE
-    '1506481295700529172': { 
-      appId: '1506481295700529172', 
-      gameName: 'EMPULSE',
-      requiredMinutes: 15
-    },
-    // GOALS
-    '1440130372162682961': { 
-      appId: '1440130372162682961', 
-      gameName: 'GOALS',
-      requiredMinutes: 15
-    },
-    // The Mound: Omen of Cthulhu
-    '1515074184961724517': { 
-      appId: '1515074184961724517', 
-      gameName: 'The Mound: Omen of Cthulhu',
-      requiredMinutes: 15
-    }
+    '1421154726023532544': { appId: '1421154726023532544', gameName: 'EA SPORTS FC 26', requiredMinutes: 15 },
+    '1437509662303059998': { appId: '1437509662303059998', gameName: 'Where Winds Meet', requiredMinutes: 15 },
+    '1470616226995765409': { appId: '1470616226995765409', gameName: 'Neverness to Everness', requiredMinutes: 15 },
+    '363445589247131668': { appId: '363445589247131668', gameName: 'Roblox', requiredMinutes: 15 },
+    '1257819671114289184': { appId: '1257819671114289184', gameName: 'Zenless Zone Zero', requiredMinutes: 15 },
+    '700136079562375258': { appId: '700136079562375258', gameName: 'VALORANT', requiredMinutes: 15 },
+    '1247227126416146462': { appId: '1247227126416146462', gameName: 'Wuthering Waves', requiredMinutes: 15 },
+    '1461154307171811401': { appId: '1461154307171811401', gameName: 'Arknights: Endfield', requiredMinutes: 15 },
+    '1180205756998488064': { appId: '1180205756998488064', gameName: 'Old School RuneScape', requiredMinutes: 15 },
+    '1402418586244612216': { appId: '1402418586244612216', gameName: 'Warframe', requiredMinutes: 15 },
+    '1140238527980916757': { appId: '1140238527980916757', gameName: 'Yu-Gi-Oh! Master Duel', requiredMinutes: 15 },
+    '1314682894106497096': { appId: '1314682894106497096', gameName: 'Delta Force', requiredMinutes: 15 },
+    '1162085521816813721': { appId: '1162085521816813721', gameName: 'Escape the Backrooms', requiredMinutes: 15 },
+    '1506481295700529172': { appId: '1506481295700529172', gameName: 'EMPULSE', requiredMinutes: 15 },
+    '1440130372162682961': { appId: '1440130372162682961', gameName: 'GOALS', requiredMinutes: 15 },
+    '1515074184961724517': { appId: '1515074184961724517', gameName: 'The Mound: Omen of Cthulhu', requiredMinutes: 15 }
   }
 
-  // Look up known game
   if (KNOWN_GAMES[questId]) {
     return KNOWN_GAMES[questId]
   }
 
-  // Default fallback
-  console.warn(`[CHROMIUM] Unknown quest ID: ${questId}, using default`)
+  console.warn(`[WEBCLIENT] Unknown quest ID: ${questId}, using default`)
   return {
     appId: questId,
     gameName: `Unknown Game (${questId})`,

@@ -1,42 +1,51 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSessionToken } from '@/lib/session'
 
-// Fetch REAL Discord Quests from the correct endpoint
+// Fetch REAL Discord Quests from Discord's actual endpoint
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url)
-    const sessionId = searchParams.get('sessionId')
-
-    if (!sessionId) {
-      return NextResponse.json({ error: 'Session ID required' }, { status: 401 })
-    }
-
-    // Verify session
-    const token = getSessionToken(sessionId)
+    // Get token from cookies (new persistent auth)
+    const token = await getSessionToken()
+    
     if (!token) {
-      return NextResponse.json({ error: 'Session expired or invalid' }, { status: 401 })
+      return NextResponse.json({ 
+        success: false,
+        error: 'Not authenticated. Please login first.',
+        code: 'NOT_AUTHENTICATED' 
+      }, { status: 401 })
     }
+
+    console.log('[QUESTS API] Fetching quests with token:', token.substring(0, 20) + '...')
 
     // Fetch REAL quests from Discord's actual quest endpoint
     const questsRes = await fetch('https://discord.com/api/v10/quests/@me', {
       headers: { 
         'Authorization': token,
-        'User-Agent': 'DiscordQuestTool/1.0 (Educational)'
-      }
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      // Add timeout
+      signal: AbortSignal.timeout(15000)
     })
 
     if (!questsRes.ok) {
-      console.error('[QUESTS API] Discord returned:', questsRes.status, await questsRes.text())
+      const errorText = await questsRes.text().catch(() => 'Unknown error')
+      console.error('[QUESTS API] Discord returned:', questsRes.status, errorText)
+      
       return NextResponse.json({
         success: true,
         quests: [],
         error: `Discord API error: ${questsRes.status}`,
-        message: 'Unable to fetch quests from Discord. Please check your token.'
+        message: 'Unable to fetch quests from Discord. Please check your token or try logging in again.',
+        code: 'DISCORD_API_ERROR'
       })
     }
 
     const questsData = await questsRes.json()
     const rawQuests = questsData.quests || []
+
+    console.log(`[QUESTS API] Found ${rawQuests.length} raw quests`)
 
     // Get current time for filtering
     const now = new Date()
@@ -68,13 +77,11 @@ export async function GET(request: NextRequest) {
         const isProgressComplete = progressSeconds >= targetSeconds
         
         // CORRECT completion detection:
-        // 1. Must have is_claimed = true (user actually claimed/rewarded)
-        // 2. OR must have 100% progress + completed_at is a real timestamp (not 0 or empty)
         const claimedReward = userStatus.is_claimed === true
         const hasRealCompletionTimestamp = userStatus.completed_at && 
                                           userStatus.completed_at > 0 && 
                                           typeof userStatus.completed_at === 'number' &&
-                                          userStatus.completed_at > 1000000000000 // Valid Unix timestamp (ms)
+                                          userStatus.completed_at > 1000000000000
         const isCompleted = claimedReward || (hasRealCompletionTimestamp && isProgressComplete)
         
         // Determine status with FIXED logic
@@ -88,7 +95,7 @@ export async function GET(request: NextRequest) {
           status = 'available'
         }
 
-        // Extract task info (already extracted above for status calculation)
+        // Extract task info
         const [taskType] = taskEntry || ['UNKNOWN', {}]
         const progressPercent = Math.min((progressSeconds / targetSeconds) * 100, 100)
 
@@ -99,7 +106,7 @@ export async function GET(request: NextRequest) {
           status,
           reward: getRewardFromFeatures(config.features),
           progress: Math.round(progressPercent),
-          totalTime: Math.ceil(targetSeconds / 60), // Convert to minutes
+          totalTime: Math.ceil(targetSeconds / 60),
           gameName: application.name || 'Unknown Game',
           gameIcon: getGameIcon(application.id),
           appId: application.id,
@@ -138,11 +145,9 @@ export async function GET(request: NextRequest) {
         }
       })
       .filter((quest: any) => {
-        // Only show non-expired quests by default, or completed ones
         return !quest.isExpired || quest.isCompleted
       })
       .sort((a: any, b: any) => {
-        // Sort: available first, then in_progress, then completed, expired last
         const statusOrder = { 'available': 0, 'in_progress': 1, 'completed': 2, 'expired': 3 }
         return (statusOrder[a.status] || 4) - (statusOrder[b.status] || 4)
       })
@@ -162,15 +167,14 @@ export async function GET(request: NextRequest) {
       summary,
       fetchedAt: now.toISOString(),
       message: `Found ${processedQuests.length} quests (${summary.available} available, ${summary.completed} completed)`,
-      note: 'These are REAL Discord quests. Completion requires local gameplay detection.',
-      method: 'PLAY_ON_DESKTOP - Requires local Discord client with Rich Presence'
+      method: '🌐 Discord Web Client Injection'
     })
 
   } catch (error) {
     console.error('[QUESTS API Error]', error)
     
     return NextResponse.json({
-      success: true,
+      success: false,
       quests: [],
       error: process.env.NODE_ENV === 'development' ? String(error) : undefined,
       message: 'Unable to fetch quests. Please try again.'
@@ -182,12 +186,11 @@ export async function GET(request: NextRequest) {
 function getRewardFromFeatures(features?: number[]): string {
   if (!features || features.length === 0) return 'Rewards'
   
-  // Common reward patterns based on feature flags
   const featureSum = features.reduce((a, b) => a + b, 0)
   
-  if (features.includes(15)) return '⊙ 700 Orbs + PFP' // High value quest
-  if (features.includes(7)) return '⊙ 200 Orbs' // Standard quest
-  if (features.includes(3)) return '⊙ 100 Orbs' // Small quest
+  if (features.includes(15)) return '⊙ 700 Orbs + PFP'
+  if (features.includes(7)) return '⊙ 200 Orbs'
+  if (features.includes(3)) return '⊙ 100 Orbs'
   
   return 'Orbs Reward'
 }
@@ -195,7 +198,5 @@ function getRewardFromFeatures(features?: number[]): string {
 // Helper function to get game icon URL
 function getGameIcon(appId?: string): string {
   if (!appId) return '🎮'
-  
-  // Return CDN URL for app icon
   return `https://cdn.discordapp.com/app-icons/${appId}/icon.png?size=64`
 }

@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyApiKey, hasPermission } from '@/lib/api-keys'
 import { 
-  getChromiumSessionStatus, 
-  getActiveSessions,
-  ChromiumQuestSession 
-} from '@/lib/chromium-client'
+  getWebClientSessionStatus, 
+  getActiveWebClientSessions,
+  WebClientSession
+} from '@/lib/webclient-activity'
 
-// GET /api/v1/quests/:id/status - Get Chromium quest completion status
+// GET /api/v1/quests/:id/status - Get WebClient quest completion status
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -40,7 +40,7 @@ export async function GET(
 
     // If specific session requested
     if (sessionParam) {
-      const sessionStatus = getChromiumSessionStatus(sessionParam)
+      const sessionStatus = getWebClientSessionStatus(sessionParam)
       
       if (!sessionStatus) {
         return NextResponse.json({
@@ -57,47 +57,54 @@ export async function GET(
       }
 
       // Calculate timing info
-      const now = Date.now()
-      const elapsed = now - ((sessionStatus.startTime as number) || now)
-      const remaining = Math.max(0, (((sessionStatus.endTime as number) || now) - now))
-      const progress = sessionStatus.progress || Math.min((elapsed / 900000) * 100, 99.9)
+      const elapsed = sessionStatus.totalSeconds
+      const requiredSeconds = 900
+      const progress = Math.min((elapsed / requiredSeconds) * 100, 99.9)
 
       return NextResponse.json({
         success: true,
         session: {
-          ...sessionStatus,
+          id: sessionStatus.id,
+          status: sessionStatus.status,
+          method: '🌐 Discord Web Client Injection',
+          
           timing: {
-            startedAt: new Date((sessionStatus.startTime as number) || now).toISOString(),
-            elapsedSeconds: Math.floor(elapsed / 1000),
-            elapsedFormatted: formatTime(Math.floor(elapsed / 1000)),
-            remainingSeconds: Math.ceil(remaining / 1000),
-            remainingFormatted: formatTime(Math.ceil(remaining / 1000)),
-            totalSeconds: (sessionStatus.requiredSeconds as number) || 900,
-            estimatedCompletion: new Date((sessionStatus.endTime as number) || now).toISOString(),
-            isOvertime: now > ((sessionStatus.endTime as number) || 0),
-            progressPercent: Math.round(progress * 100) / 100
+            startedAt: sessionStatus.startTime.toISOString(),
+            elapsedSeconds: elapsed,
+            elapsedFormatted: formatTime(elapsed),
+            remainingSeconds: Math.max(0, requiredSeconds - elapsed),
+            remainingFormatted: formatTime(Math.max(0, requiredSeconds - elapsed)),
+            totalSeconds: requiredSeconds,
+            progressPercent: Math.round(progress * 100) / 100,
+            lastActivityUpdate: sessionStatus.lastActivityUpdate?.toISOString()
           },
+          
           browserInfo: {
-            method: 'Puppeteer Chromium Automation',
-            stealthMode: (sessionStatus.config as any)?.stealthMode || true,
-            presenceUpdates: sessionStatus.presenceUpdates || 0,
-            discordConfirmedProgress: sessionStatus.discordProgress || 0
+            method: 'Discord Web Client + WebSocket Hook',
+            discordConfirmed: sessionStatus.discordConfirmed || false
           },
+          
+          quest: {
+            questId: sessionStatus.questId,
+            gameName: sessionStatus.gameName,
+            appId: sessionStatus.appId
+          },
+
           actions: {
             cancel: `/api/v1/quests/${questId}/cancel?session=${sessionParam}`,
             refresh: `/api/v1/quests/${questId}/status?session=${sessionParam}`
           }
         },
-        message: getStatusMessage(sessionStatus.status as string),
-        tips: getStatusTips(sessionStatus.status as string, progress)
+        message: getStatusMessage(sessionStatus.status),
+        tips: getStatusTips(sessionStatus.status, progress)
       })
     }
 
     // Find active sessions for this user and quest
-    const activeSessionsMap = getActiveSessions()
-    const userQuestSessions: ChromiumQuestSession[] = []
+    const activeSessionsList = getActiveWebClientSessions()
+    const userQuestSessions: WebClientSession[] = []
     
-    for (const [, session] of activeSessionsMap.entries()) {
+    for (const session of activeSessionsList) {
       if (session.userId === keyData.user.id && 
           (session.questId === questId || session.id === questId)) {
         userQuestSessions.push(session)
@@ -108,7 +115,7 @@ export async function GET(
       return NextResponse.json({
         success: true,
         status: 'no_active_sessions',
-        message: 'No active Chromium sessions found',
+        message: 'No active WebClient sessions found',
         questId,
         suggestions: [
           'Start a quest using POST /api/v1/quests/:id/start',
@@ -127,12 +134,9 @@ export async function GET(
       id: s.id,
       status: s.status,
       gameName: s.gameName,
-      progress: Math.round(s.progress * 100) / 100,
-      phase: s.phase,
-      elapsedSeconds: Math.floor((Date.now() - s.startTime) / 1000),
-      presenceUpdates: s.presenceUpdates,
-      discordProgress: s.discordProgress,
-      startedAt: new Date(s.startTime).toISOString()
+      totalSeconds: s.totalSeconds,
+      lastActivityUpdate: s.lastActivityUpdate?.toISOString(),
+      startedAt: s.startTime.toISOString()
     }))
 
     return NextResponse.json({
@@ -144,13 +148,13 @@ export async function GET(
       details: {
         primarySession: sessionsSummary[0],
         canStartNew: !sessionsSummary.some(s => 
-          ['launching', 'authenticating', 'active'].includes(s.status)
+          ['launching', 'authenticating', 'setting_activity', 'running'].includes(s.status)
         )
       }
     })
 
   } catch (error) {
-    console.error('[CHROMIUM STATUS] Error:', error)
+    console.error('[WEBCLIENT STATUS] Error:', error)
     return NextResponse.json(
       { error: 'Failed to get quest status', code: 'INTERNAL_ERROR', details: error instanceof Error ? error.message : 'Unknown' },
       { status: 500 }
@@ -179,11 +183,10 @@ function getStatusMessage(status: string): string {
   const messages: Record<string, string> = {
     launching: '🌐 Browser is launching...',
     authenticating: '🔐 Authenticating with Discord...',
-    active: '🎮 Quest is actively running!',
-    paused: '⏸️ Quest is paused',
+    setting_activity: '💉 Injecting activity into client...',
+    running: '🎮 Quest is actively running!',
     completed: '✅ Quest completed successfully!',
-    error: '❌ Quest encountered an error',
-    cancelled: '🛑 Quest was cancelled by user'
+    error: '❌ Quest encountered an error'
   }
   return messages[status] || `Status: ${status}`
 }
@@ -194,13 +197,14 @@ function getStatusTips(status: string, progress: number): string[] {
       return ['Browser is starting up...', 'This usually takes 10-30 seconds']
     case 'authenticating':
       return ['Logging into Discord...', 'Token is being validated']
-    case 'active':
+    case 'setting_activity':
+      return ['Hooking into WebSocket...', 'Injecting activity payload...']
+    case 'running':
       return [
         progress < 20 ? '📊 Establishing gameplay detection...' :
-        progress < 40 ? '🎮 Discord is tracking activity...' :
-        progress < 60 ? '⏱️ Making good progress...' :
-        progress < 80 ? '🎯 Almost there...' :
-        '🔄 Finalizing completion...',
+        progress < 50 ? '🎮 Discord is tracking activity...' :
+        progress < 80 ? '⏱️ Making good progress...' :
+        '🎯 Almost there...',
         `Keep this session alive until ${formatTime((1 - progress/100) * 900)} remains`
       ]
     case 'completed':
@@ -214,11 +218,6 @@ function getStatusTips(status: string, progress: number): string[] {
         'Something went wrong',
         'Check the logs for details',
         'Try starting again'
-      ]
-    case 'cancelled':
-      return [
-        'Quest was stopped',
-        'You can start again anytime'
       ]
     default:
       return []

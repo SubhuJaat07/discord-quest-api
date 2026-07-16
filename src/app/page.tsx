@@ -101,15 +101,29 @@ export default function Home() {
           const response = await fetch(`/api/quest/start?sessionId=${sessionId}`)
           const data = await response.json()
           
-          if (data.success && data.quest) {
-            setQuestStatus(data.quest)
+          if (data.success) {
+            // Update quest status from response
+            if (data.progress) {
+              setQuestStatus(prev => prev ? {
+                ...prev,
+                progress: data.progress.percent,
+                elapsedSeconds: data.progress.elapsedSeconds,
+                remainingSeconds: data.progress.remainingSeconds,
+                formattedElapsed: data.progress.elapsedFormatted,
+                formattedRemaining: data.progress.remainingFormatted,
+                status: data.status === 'running' ? 'running' : 
+                       data.status === 'error' ? 'failed' :
+                       prev.status,
+                phase: data.browser?.phase || data.status
+              } : prev)
+            }
             
-            if (data.quest.status === 'completed') {
+            if (data.status === 'completed' || data.message?.includes('COMPLETE')) {
               clearInterval(pollingRef.current!)
               pollingRef.current = null
               setAppState('ready')
               setActiveQuestId(null)
-              setSuccessMessage(`🎉 Quest completed successfully!`)
+              setSuccessMessage(`🎉 Quest completed successfully! Check Discord to claim reward.`)
               
               setQuests(prevQuests => 
                 prevQuests.map(q => 
@@ -120,12 +134,12 @@ export default function Home() {
               )
               
               setTimeout(() => setSuccessMessage(null), 10000)
-            } else if (data.quest.status === 'failed') {
+            } else if (data.status === 'error') {
               clearInterval(pollingRef.current!)
               pollingRef.current = null
               setAppState('ready')
               setActiveQuestId(null)
-              setError('Quest failed. Please try again.')
+              setError('Quest encountered an error. Please try again.')
             }
           }
         } catch (err) {
@@ -164,26 +178,31 @@ export default function Home() {
         throw new Error(data.error || 'Authentication failed')
       }
 
-      setSessionId(data.sessionId)
+      // Session is stored in cookies now, no need for client-side session ID
       setUserInfo(data.user)
       
-      await fetchQuests(data.sessionId)
+      await fetchQuests()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to authenticate')
       setAppState('idle')
     }
   }, [token])
 
-  // Fetch available quests
-  const fetchQuests = useCallback(async (sid: string) => {
+  // Fetch available quests (uses cookies for auth)
+  const fetchQuests = useCallback(async () => {
     setAppState('fetching_quests')
     
     try {
-      const response = await fetch(`/api/quests?sessionId=${sid}`)
+      // No need to pass sessionId - API reads from cookies
+      const response = await fetch('/api/quests')
       const data = await response.json()
 
       if (!response.ok) {
         throw new Error(data.error || 'Failed to fetch quests')
+      }
+
+      if (!data.success && data.code === 'NOT_AUTHENTICATED') {
+        throw new Error('Session expired. Please login again.')
       }
 
       setQuests(data.quests || [])
@@ -198,10 +217,8 @@ export default function Home() {
     }
   }, [])
 
-  // Start REAL quest completion
+  // Start REAL quest completion via Web Client Injection
   const handleStartQuest = useCallback(async (questId: string) => {
-    if (!sessionId) return
-
     setActiveQuestId(questId)
     setAppState('starting_quest')
     setError(null)
@@ -212,14 +229,14 @@ export default function Home() {
       const response = await fetch('/api/quest/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, questId })
+        body: JSON.stringify({ questId })
       })
 
       const data = await response.json()
 
       if (!response.ok) {
         if (response.status === 409 && data.currentQuest) {
-          setError(`Already running: ${data.phase} (${data.elapsed}s elapsed)`)
+          setError(`Already running: ${data.currentQuest.gameName} (${data.currentQuest.elapsed}s elapsed)`)
           setAppState('ready')
           setActiveQuestId(null)
           return
@@ -227,15 +244,17 @@ export default function Home() {
         throw new Error(data.error || 'Failed to start quest')
       }
 
-      // Quest started - will take REAL 15 minutes with actual Discord API calls
+      // Quest started with WebClient method
+      const newSessionId = data.sessionId
+      setSessionId(newSessionId)
       setAppState('quest_active')
       
       setQuestStatus({
-        id: data.questSessionId,
+        id: newSessionId,
         questId,
         appName: quests.find(q => q.id === questId)?.gameName || 'Game',
         status: 'initializing',
-        phase: data.phases?.[0] || 'Starting...',
+        phase: 'launching',
         progress: 0,
         elapsedSeconds: 0,
         remainingSeconds: 900,
@@ -246,14 +265,14 @@ export default function Home() {
         activitySent: false
       })
 
-      setSuccessMessage(`🚀 Starting real quest completion...`)
+      setSuccessMessage(`🌐 Starting quest via Discord Web Client...`)
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start quest')
       setAppState('ready')
       setActiveQuestId(null)
     }
-  }, [sessionId, quests])
+  }, [quests])
 
   // Download local completion script
   const handleDownloadScript = useCallback(async (quest: DiscordQuest) => {
@@ -319,8 +338,9 @@ export default function Home() {
         setAppState('ready')
         setActiveQuestId(null)
         setQuestStatus(null)
+        setSessionId(null)
         setSuccessMessage(null)
-        setError('Quest cancelled.')
+        setError('Quest cancelled. Progress was lost.')
         setTimeout(() => setError(null), 5000)
       }
     } catch (err) {
@@ -348,11 +368,9 @@ export default function Home() {
 
   // Refresh quests
   const handleRefresh = useCallback(() => {
-    if (sessionId) {
-      setError(null)
-      fetchQuests(sessionId)
-    }
-  }, [sessionId, fetchQuests])
+    setError(null)
+    fetchQuests()
+  }, [fetchQuests])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-950 to-slate-900">
