@@ -9,7 +9,54 @@
  */
 
 import puppeteer, { Browser, Page } from 'puppeteer-core';
-import { findExecutablePath } from './chromium-client';
+
+/**
+ * Find Chromium executable path
+ */
+function findExecutablePath(): string | null {
+  // Check environment variable first
+  if (process.env.CHROMIUM_PATH) {
+    return process.env.CHROMIUM_PATH;
+  }
+  
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    return process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+  
+  // Common paths for different environments
+  const possiblePaths = [
+    // Alpine Linux (Railway/Docker)
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+    // Ubuntu/Debian
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium-browser',
+    // Arch Linux
+    '/usr/bin/chromium',
+    // macOS
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    // Windows (Git Bash / WSL)
+    '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
+    '/c/Program Files/Google/Chrome/Application/chrome.exe',
+  ];
+  
+  for (const path of possiblePaths) {
+    try {
+      // We can't actually check if file exists in browser context,
+      // so return the most likely path based on platform
+      if (process.platform === 'linux') {
+        return '/usr/bin/chromium-browser';
+      } else if (process.platform === 'darwin') {
+        return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+      } else {
+        return 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+      }
+    } catch {}
+  }
+  
+  // Default fallback
+  return '/usr/bin/chromium-browser';
+}
 
 export interface WebClientConfig {
   headless?: boolean;
