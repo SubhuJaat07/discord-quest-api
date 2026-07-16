@@ -9,7 +9,7 @@
  */
 
 import puppeteer, { Browser, Page } from 'puppeteer-core';
-import { findExecutablePath } from './chromium';
+import { findExecutablePath } from './chromium-client';
 
 export interface WebClientConfig {
   headless?: boolean;
