@@ -10,7 +10,7 @@ console.log("🎮 Testing DISCORD GAME ACTIVITY PROTOCOLS\n");
 async function testSpecialPresence() {
   console.log("1️⃣ Testing SPECIAL ACTIVITY FLAGS...");
   
-  const token = "YOUR_TOKEN_HERE";
+  const token = process.env.DISCORD_TOKEN || "YOUR_TOKEN_HERE";
   
   // Connect to Gateway
   const ws = new WebSocket('wss://gateway.discord.gg/?v=10&encoding=json', {

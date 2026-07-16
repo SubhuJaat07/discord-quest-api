@@ -1,6 +1,6 @@
 const WebSocket = require('ws');
 
-const TOKEN = "YOUR_TOKEN_HERE";
+const TOKEN = process.env.DISCORD_TOKEN || "YOUR_TOKEN_HERE";
 const ROBLOX_APP_ID = "363445589247131668";
 
 console.log("🎮 ADVANCED DISCORD RPC EMULATOR");
