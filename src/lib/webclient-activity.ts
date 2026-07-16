@@ -190,6 +190,79 @@ export async function startWebClientQuest(
     
     console.log('[WebClient] ✅ Debug logging enabled');
     
+    // 🎯 CRITICAL: Set up WebSocket hook BEFORE navigation!
+    console.log('[WebClient] Setting up WebSocket hook BEFORE page load...');
+    
+    await page.evaluateOnNewDocument(() => {
+      // This runs BEFORE any page scripts
+      console.log('[Hook] WebSocket hook being installed (before page load)...');
+      
+      const OriginalWS = window.WebSocket;
+      let hookInstalled = false;
+      
+      window.WebSocket = function(url: string, protocols?: string | string[]) {
+        console.log(`[Hook] 🎯 WebSocket created: ${url}`);
+        const ws = new OriginalWS(url, protocols);
+        
+        ws.addEventListener('open', () => {
+          console.log(`[Hook] ✅ WebSocket OPENED: ${url}`);
+          
+          // Check if this is Discord gateway
+          if (url.includes('discord') || url.includes('gateway')) {
+            console.log(`[Hook] 🎮 DISCORD GATEWAY CAPTURED!`);
+            (window as any)._discordWs = ws;
+            (window as any)._discordGatewayUrl = url;
+            (window as any)._wsConnected = true;
+            (window as any)._wsConnectedAt = Date.now();
+            
+            // Dispatch event for other code to use
+            window.dispatchEvent(new CustomEvent('discordGatewayConnected', {
+              detail: { url, ws, timestamp: Date.now() }
+            }));
+          }
+        });
+        
+        ws.addEventListener('message', (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            
+            // Log important gateway events
+            if (data.op === 10) console.log('[Hook] Received HELLO');
+            if (data.t === 'READY') {
+              console.log('[Hook] ✅✅✅ CLIENT READY! Discord accepted connection!');
+              (window as any)._clientReady = true;
+              (window as any)._clientReadyAt = Date.now();
+            }
+            if (data.t === 'PRESENCE_UPDATE') {
+              console.log('[Hook] Presence update received from server');
+            }
+          } catch (e) {}
+        });
+        
+        // Intercept sends
+        const originalSend = ws.send.bind(ws);
+        ws.send = function(data: any) {
+          try {
+            if (typeof data === 'string') {
+              const parsed = JSON.parse(data);
+              if (parsed.op === 2) console.log('[Hook] Sending IDENTIFY');
+              if (parsed.op === 3) console.log('[Hook] Sending PRESENCE_UPDATE with activities:', 
+                JSON.stringify(parsed.d.activities?.[0]?.name || 'none'));
+              if (parsed.op === 6) console.log('[Hook] Sending RESUME');
+            }
+          } catch (e) {}
+          return originalSend(data);
+        };
+        
+        return ws;
+      };
+      
+      hookInstalled = true;
+      console.log('[Hook] ✅ WebSocket hook installed successfully');
+    });
+    
+    console.log('[WebClient] ✅ WebSocket hook configured');
+    
     // Set up request interception to inject auth token
     await page.setRequestInterception(true);
     
