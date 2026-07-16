@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server'
 
-// Version tracking - MAJOR FIX UPDATE
+// Version tracking - v2.1.0
 const VERSION_INFO = {
-  version: "2.0.0", // MAJOR VERSION BUMP - Complete rewrite
-  buildNumber: "004",
+  version: "2.1.0", // Single-page stable approach
+  buildNumber: "005",
   buildDate: new Date().toISOString(),
-  codename: "HonestProgress",
+  codename: "StablePage",
   
   features: [
     "🔥 REAL Discord API verification (no more fake progress!)",
