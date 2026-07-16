@@ -339,8 +339,8 @@ export async function startWebClientQuest(
       timeout: 60000 
     });
     
-    // Wait for quest page content
-    await page.waitForTimeout(3000); // Let JS execute
+    // Wait for quest page content (manual delay - waitForTimeout deprecated)
+    await new Promise(resolve => setTimeout(resolve, 3000)); // Let JS execute
     
     const questPageContent = await page.evaluate(() => {
       return {
