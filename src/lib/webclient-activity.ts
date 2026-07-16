@@ -1,11 +1,22 @@
 /**
- * Web Client Activity Injection System
+ * 🔥🔥🔥 FIXED: Real Discord Quest Progress System 🔥🔥🔥
  * 
- * This module uses Puppeteer to control Discord's ACTUAL web client
- * and inject game activity through Discord's own JavaScript runtime.
+ * KEY INSIGHT FROM USER (CORRECT):
+ * - Mobile browser extensions (Yandex/Kiwi) complete quests WITHOUT .exe
+ * - They keep discord.com/quest-home OPEN in browser
+ * - Browser-to-browser = same concept, just server-side vs client-side
  * 
- * KEY INSIGHT: Instead of trying to fake RPC from outside, we use
- * Discord's own client code to send legitimate presence updates.
+ * WHAT WAS WRONG BEFORE:
+ * - op:3 PRESENCE_UPDATE only changes status display
+ * - Discord quest system uses DIFFERENT tracking method
+ * - Internal timer showed progress but Discord API showed 0%
+ * 
+ * NEW APPROACH (Based on extension behavior):
+ * 1. Open REAL Chromium with user's token
+ * 2. Navigate to discord.com/quest-home (like extensions do)
+ * 3. Keep session active with proper presence
+ * 4. Poll Discord's REAL quest API for actual progress
+ * 5. Only report success when Discord confirms >0%
  */
 
 import puppeteer, { Browser, Page } from 'puppeteer-core';
@@ -14,47 +25,20 @@ import puppeteer, { Browser, Page } from 'puppeteer-core';
  * Find Chromium executable path
  */
 function findExecutablePath(): string | null {
-  // Check environment variable first
-  if (process.env.CHROMIUM_PATH) {
-    return process.env.CHROMIUM_PATH;
-  }
+  if (process.env.CHROMIUM_PATH) return process.env.CHROMIUM_PATH;
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
   
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    return process.env.PUPPETEER_EXECUTABLE_PATH;
-  }
-  
-  // Common paths for different environments
   const possiblePaths = [
-    // Alpine Linux (Railway/Docker)
     '/usr/bin/chromium-browser',
     '/usr/bin/chromium',
-    // Ubuntu/Debian
     '/usr/bin/google-chrome',
-    '/usr/bin/chromium-browser',
-    // Arch Linux
-    '/usr/bin/chromium',
-    // macOS
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    // Windows (Git Bash / WSL)
-    '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
-    '/c/Program Files/Google/Chrome/Application/chrome.exe',
+    '/usr/bin/google-chrome-stable',
   ];
   
   for (const path of possiblePaths) {
-    try {
-      // We can't actually check if file exists in browser context,
-      // so return the most likely path based on platform
-      if (process.platform === 'linux') {
-        return '/usr/bin/chromium-browser';
-      } else if (process.platform === 'darwin') {
-        return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-      } else {
-        return 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-      }
-    } catch {}
+    try { return path; } catch {}
   }
   
-  // Default fallback
   return '/usr/bin/chromium-browser';
 }
 
@@ -73,11 +57,20 @@ export interface WebClientSession {
   startTime: Date;
   browser: Browser | null;
   page: Page | null;
-  status: 'launching' | 'authenticating' | 'setting_activity' | 'running' | 'error' | 'completed';
+  status: 'launching' | 'authenticating' | 'opening_quest_page' | 'injecting_activity' | 'running' | 'verifying' | 'error' | 'completed';
   lastActivityUpdate: Date | null;
   totalSeconds: number;
   error?: string;
-  discordConfirmed?: boolean;
+  
+  // 🎯 REAL PROGRESS FIELDS (from Discord API)
+  discordVerifiedProgress?: number;
+  discordQuestStatus?: string;
+  lastDiscordCheck?: Date;
+  discordApiRaw?: any;
+  
+  // Verification flags
+  realProgressDetected: boolean;
+  firstProgressTime?: Date;
 }
 
 const activeSessions = new Map<string, WebClientSession>();
@@ -88,14 +81,112 @@ function generateSessionId(): string {
 
 async function getChromiumPath(): Promise<string> {
   const exePath = findExecutablePath();
-  if (!exePath) {
-    throw new Error('Chromium/Chrome not found');
-  }
+  if (!exePath) throw new Error('Chromium/Chrome not found');
   return exePath;
 }
 
 /**
- * Launch Discord web client and inject activity
+ * 🔥 QUERY DISCORD'S REAL QUEST API 🔥
+ * This is the ONLY source of truth for quest progress
+ */
+async function queryRealDiscordQuestProgress(token: string, questId: string): Promise<{
+  hasProgress: boolean;
+  progressValue: number;
+  status: string;
+  rawData: any;
+}> {
+  try {
+    console.log(`[REAL API] Querying Discord quest API for ${questId}...`);
+    
+    const response = await fetch('https://discord.com/api/v10/users/@me/quests', {
+      headers: {
+        'Authorization': token,
+        'Content-Type': 'application/json',
+        'User-Agent': 'DiscordClient/2.0 (Windows 10)',
+        'Accept': '*/*',
+      }
+    });
+
+    if (!response.ok) {
+      console.error(`[REAL API] Error: ${response.status}`);
+      return { hasProgress: false, progressValue: 0, status: `api_error_${response.status}`, rawData: null };
+    }
+
+    const data = await response.json();
+    console.log(`[REAL API] Got response, type: ${typeof data}, array: ${Array.isArray(data)}`);
+    
+    // Log raw structure for debugging
+    console.log(`[RAW] ${JSON.stringify(data).substring(0, 500)}...`);
+
+    // Find our quest
+    let targetQuest = null;
+    
+    if (Array.isArray(data)) {
+      targetQuest = data.find(q => q.id === questId || q.quest_id === questId);
+    } else if (data && typeof data === 'object') {
+      // Check nested structures
+      const quests = data.quests || data.data || [];
+      targetQuest = quests.find((q: any) => q.id === questId || q.quest_id === questId);
+      
+      // Also check if data itself is the quest
+      if (!targetQuest && (data.id === questId || data.quest_id === questId)) {
+        targetQuest = data;
+      }
+    }
+
+    if (!targetQuest) {
+      console.log(`[REAL API] Quest ${questId} not found in response`);
+      return { hasProgress: false, progressValue: 0, status: 'not_found', rawData: data };
+    }
+
+    console.log(`[REAL API] Found quest! Keys: ${Object.keys(targetQuest).join(', ')}`);
+
+    // Extract progress from various possible fields
+    const progressFields = {
+      progress: targetQuest.progress,
+      progress_seconds: targetQuest.progress_seconds,
+      current_progress: targetQuest.current_progress,
+      elapsed: targetQuest.elapsed,
+      time_played: targetQuest.time_played,
+      percent_complete: targetQuest.percent_complete,
+      user_status: targetQuest.user_status,
+      status: targetQuest.status,
+    };
+
+    console.log(`[REAL API] Progress fields: ${JSON.stringify(progressFields)}`);
+
+    // Determine if there's real progress
+    const numericProgress = Object.values(progressFields)
+      .filter(v => typeof v === 'number' && v > 0);
+    
+    const maxProgress = numericProgress.length > 0 ? Math.max(...numericProgress) : 0;
+    const status = targetQuest.status || targetQuest.user_status || 'unknown';
+    
+    const hasProgress = maxProgress > 0 || ['IN_PROGRESS', 'active', 'started'].includes(status);
+
+    console.log(`[REAL API] VERDICT: hasProgress=${hasProgress}, value=${maxProgress}, status=${status}`);
+
+    return {
+      hasProgress,
+      progressValue: maxProgress,
+      status,
+      rawData: targetQuest
+    };
+
+  } catch (error) {
+    console.error(`[REAL API] Exception:`, error);
+    return { hasProgress: false, progressValue: 0, status: 'error', rawData: null };
+  }
+}
+
+/**
+ * 🚀 START REAL QUEST SESSION
+ * 
+ * New approach based on extension behavior:
+ * 1. Open Chromium with token auth
+ * 2. Navigate to discord.com/quest-home (CRITICAL!)
+ * 3. Set up proper activity via Discord's own mechanisms
+ * 4. Poll real Discord API for progress verification
  */
 export async function startWebClientQuest(
   token: string,
@@ -126,16 +217,21 @@ export async function startWebClientQuest(
     status: 'launching',
     lastActivityUpdate: null,
     totalSeconds: 0,
+    realProgressDetected: false,
   };
   
   activeSessions.set(sessionId, session);
   
   try {
-    console.log(`[WebClient] Starting session ${sessionId} for quest ${questId}`);
-    console.log(`[WebClient] Game: ${gameName} (App ID: ${appId})`);
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`[QUEST] Starting REAL quest session ${sessionId}`);
+    console.log(`[QUEST] Game: ${gameName} (App ID: ${appId})`);
+    console.log(`[QUEST] Quest ID: ${questId}`);
+    console.log(`${'='.repeat(60)}\n`);
     
     session.status = 'launching';
     
+    // Launch browser with realistic settings
     const browser = await puppeteer.launch({
       executablePath: chromiumPath,
       headless: config?.headless ?? true,
@@ -147,302 +243,153 @@ export async function startWebClientQuest(
         '--no-first-run',
         '--no-zygote',
         '--single-process',
-        `--window-size=1280,720`,
+        `--window-size=1920,1080`,
         '--disable-blink-features=AutomationControlled',
         '--disable-infobars',
         '--enable-webgl',
         '--enable-webaudio',
-        `--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36`,
+        `--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36`,
+        '--lang=en-US,en',
+        '--disable-features=IsolateOrigins,site-per-process',
       ],
       ignoreDefaultArgs: ['--enable-automation'],
     });
     
     session.browser = browser;
-    console.log('[WebClient] Browser launched successfully');
+    console.log('[QUEST] ✅ Browser launched');
     
     const page = await browser.newPage();
     session.page = page;
     
-    // 🔍 DEBUG: Capture ALL console logs from browser
+    // Set viewport to realistic size
+    await page.setViewport({ width: 1920, height: 1080 });
+    
+    // Enable verbose logging
     page.on('console', (msg) => {
       const text = msg.text();
-      if (text.includes('[Hook]') || 
+      if (text.includes('[Quest]') || 
           text.includes('[Auth]') || 
-          text.includes('[Interval]') ||
-          text.includes('WebSocket') ||
-          text.includes('gateway') ||
-          text.includes('activity') ||
+          text.includes('[Activity]') ||
+          text.includes('[API]') ||
           text.includes('error') ||
-          text.includes('Error')) {
+          text.includes('Error') ||
+          text.includes('progress')) {
         console.log(`[BROWSER] ${text}`);
       }
     });
     
-    // 🔍 DEBUG: Capture page errors
     page.on('pageerror', (err) => {
       console.error(`[PAGE ERROR] ${err.message}`);
     });
     
-    // 🔍 DEBUG: Capture request failures
-    page.on('requestfailed', (req) => {
-      console.error(`[REQ FAILED] ${req.url()} - ${req.failure()?.errorText}`);
-    });
-    
-    console.log('[WebClient] ✅ Debug logging enabled');
-    
-    // 🎯 CRITICAL: Set up WebSocket hook BEFORE navigation!
-    console.log('[WebClient] Setting up WebSocket hook BEFORE page load...');
-    
-    await page.evaluateOnNewDocument(() => {
-      // This runs BEFORE any page scripts
-      console.log('[Hook] WebSocket hook being installed (before page load)...');
-      
-      const OriginalWS = window.WebSocket;
-      let hookInstalled = false;
-      
-      window.WebSocket = function(url: string, protocols?: string | string[]) {
-        console.log(`[Hook] 🎯 WebSocket created: ${url}`);
-        const ws = new OriginalWS(url, protocols);
-        
-        ws.addEventListener('open', () => {
-          console.log(`[Hook] ✅ WebSocket OPENED: ${url}`);
-          
-          // Check if this is Discord gateway
-          if (url.includes('discord') || url.includes('gateway')) {
-            console.log(`[Hook] 🎮 DISCORD GATEWAY CAPTURED!`);
-            (window as any)._discordWs = ws;
-            (window as any)._discordGatewayUrl = url;
-            (window as any)._wsConnected = true;
-            (window as any)._wsConnectedAt = Date.now();
-            
-            // Dispatch event for other code to use
-            window.dispatchEvent(new CustomEvent('discordGatewayConnected', {
-              detail: { url, ws, timestamp: Date.now() }
-            }));
-          }
-        });
-        
-        ws.addEventListener('message', (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            
-            // Log important gateway events
-            if (data.op === 10) console.log('[Hook] Received HELLO');
-            if (data.t === 'READY') {
-              console.log('[Hook] ✅✅✅ CLIENT READY! Discord accepted connection!');
-              (window as any)._clientReady = true;
-              (window as any)._clientReadyAt = Date.now();
-            }
-            if (data.t === 'PRESENCE_UPDATE') {
-              console.log('[Hook] Presence update received from server');
-            }
-          } catch (e) {}
-        });
-        
-        // Intercept sends
-        const originalSend = ws.send.bind(ws);
-        ws.send = function(data: any) {
-          try {
-            if (typeof data === 'string') {
-              const parsed = JSON.parse(data);
-              if (parsed.op === 2) console.log('[Hook] Sending IDENTIFY');
-              if (parsed.op === 3) console.log('[Hook] Sending PRESENCE_UPDATE with activities:', 
-                JSON.stringify(parsed.d.activities?.[0]?.name || 'none'));
-              if (parsed.op === 6) console.log('[Hook] Sending RESUME');
-            }
-          } catch (e) {}
-          return originalSend(data);
-        };
-        
-        return ws;
-      };
-      
-      hookInstalled = true;
-      console.log('[Hook] ✅ WebSocket hook installed successfully');
-    });
-    
-    console.log('[WebClient] ✅ WebSocket hook configured');
-    
-    // Set up request interception to inject auth token
-    await page.setRequestInterception(true);
-    
-    page.on('request', (req) => {
-      const url = req.url();
-      
-      if (url.includes('discord.com/api') || url.includes('discord.com/v10')) {
-        const headers = { ...req.headers(), authorization: token };
-        req.continue({ headers });
-      } else {
-        req.continue();
-      }
-    });
-    
-    console.log('[WebClient] Navigating to Discord...');
-    await page.goto('https://discord.com/app', { 
-      waitUntil: 'networkidle2',
-      timeout: config?.timeout ?? 60000 
-    });
-    
+    // ============================================
+    // STEP 1: Authenticate with Discord
+    // ============================================
+    console.log('[QUEST] Step 1: Authenticating...');
     session.status = 'authenticating';
-    console.log('[WebClient] Injecting authentication via cookies...');
     
-    // Method 1: Set Discord token via cookie (most reliable)
-    try {
-      await page.setCookie({
-        name: 'token',
-        value: `"${token}"`,
-        domain: '.discord.com',
-        path: '/',
-        httpOnly: false,
-        secure: true,
-        sameSite: 'None'
-      });
-      
-      console.log('[WebClient] Token cookie set successfully');
-    } catch (cookieError) {
-      console.warn('[WebClient] Cookie setting failed, will use request interception:', cookieError);
-    }
+    // Set token cookie before navigation
+    await page.setCookie({
+      name: 'token',
+      value: `"${token}"`,
+      domain: '.discord.com',
+      path: '/',
+      httpOnly: false,
+      secure: true,
+      sameSite: 'None'
+    });
     
-    // Method 2: Inject token via evaluateOnNewDocument (runs before page scripts)
+    // Inject token into localStorage via evaluateOnNewDocument
     await page.evaluateOnNewDocument((authToken) => {
-      // Only set localStorage if it's available (page context)
-      if (typeof window !== 'undefined' && window.localStorage) {
-        try {
-          window.localStorage.setItem('token', `"${authToken}"`);
-          console.log('[Auth] Token injected via localStorage');
-        } catch (e) {
-          console.warn('[Auth] localStorage not available:', e);
-        }
+      // Store token in multiple places for maximum compatibility
+      try {
+        localStorage.setItem('token', `"${authToken}"`);
+        console.log('[Auth] Token set in localStorage');
+      } catch (e) {
+        console.warn('[Auth] localStorage failed:', e);
       }
       
-      // Also define it on window for fallback
+      // Also expose on window
       (window as any).__DISCORD_TOKEN__ = authToken;
+      console.log('[Auth] Token exposed on window');
     }, token);
     
-    console.log('[WebClient] Reloading page with auth...');
-    await page.reload({ waitUntil: 'networkidle2', timeout: 60000 });
-    
-    await page.waitForSelector('div[class*="app-"]', { timeout: 30000 }).catch(() => {
-      console.log('[WebClient] App container not found, continuing anyway...');
+    // Navigate to Discord main page first
+    console.log('[QUEST] Navigating to discord.com...');
+    await page.goto('https://discord.com/app', { 
+      waitUntil: 'networkidle2',
+      timeout: config?.timeout ?? 90000 
     });
     
-    session.status = 'setting_activity';
-    console.log('[WebClient] Injecting activity script...');
+    // Wait for app to load
+    await page.waitForSelector('div[class*="app-"]', { timeout: 30000 })
+      .catch(() => console.log('[QUEST] App container not found, continuing...'));
     
-    const activityInjected = await page.evaluate(async ({ applicationId, game, qId }) => {
-      return new Promise((resolve) => {
-        try {
-          console.log('[Hook] Starting WebSocket hook...');
-          let wsCaptured = false;
-          let activitySent = false;
-          let retryCount = 0;
+    console.log('[QUEST] ✅ Authenticated with Discord');
+    
+    // ============================================
+    // STEP 2: Open Quest Page (CRITICAL!)
+    // Like extensions do - keep quest-home open!
+    // ============================================
+    console.log('\n[QUEST] Step 2: Opening quest-home page (CRITICAL!)');
+    session.status = 'opening_quest_page';
+    
+    await page.goto('https://discord.com/quest-home', { 
+      waitUntil: 'networkidle2',
+      timeout: 60000 
+    });
+    
+    // Wait for quest page content
+    await page.waitForTimeout(3000); // Let JS execute
+    
+    const questPageContent = await page.evaluate(() => {
+      return {
+        url: window.location.href,
+        title: document.title,
+        hasQuestContent: !!document.querySelector('[class*="quest"]') || 
+                         !!document.querySelector('[class*="reward"]') ||
+                         document.body.innerText.includes('quest'),
+        bodyPreview: document.body.innerText.substring(0, 500)
+      };
+    });
+    
+    console.log(`[QUEST] Quest page loaded: ${questPageContent.url}`);
+    console.log(`[QUEST] Has quest content: ${questPageContent.hasQuestContent}`);
+    console.log(`[QUEST] Preview: ${questPageContent.bodyPreview.substring(0, 200)}...`);
+    
+    // ============================================
+    // STEP 3: Inject Activity (Multiple Methods)
+    // ============================================
+    console.log('\n[QUEST] Step 3: Setting up activity injection...');
+    session.status = 'injecting_activity';
+    
+    // Method A: Hook WebSocket and inject activity
+    const activitySetupResult = await page.evaluate(({ applicationId, game }) => {
+      return new Promise<boolean>((resolve) => {
+        console.log('[Activity] Starting multi-method activity setup...');
+        
+        let methodsSuccessful = 0;
+        const MAX_WAIT = 10000; // 10 seconds
+        const startedAt = Date.now();
+        
+        // --- METHOD 1: WebSocket Hook ---
+        const OriginalWS = window.WebSocket;
+        let wsHooked = false;
+        
+        window.WebSocket = function(url: string, protocols?: string | string[]) {
+          console.log(`[Activity WS] Creating: ${url}`);
+          const ws = new OriginalWS(url, protocols);
           
-          // Method 1: Hook WebSocket constructor
-          const OriginalWS = window.WebSocket;
-          window.WebSocket = function(url: string, protocols?: string | string[]) {
-            console.log('[Hook] WebSocket created:', url);
-            const ws = new OriginalWS(url, protocols);
+          ws.addEventListener('open', () => {
+            console.log(`[Activity WS] Opened: ${url}`);
             
-            ws.addEventListener('open', () => {
-              console.log('[Hook] WebSocket opened:', url);
+            if (url.includes('discord') && (url.includes('gateway') || url.includes('wss://'))) {
+              console.log(`[Activity WS] 🎯 Discord Gateway captured!`);
+              wsHooked = true;
+              (window as any)._discordWs = ws;
               
-              // Check if this is Discord gateway
-              if (url.includes('gateway.discord.gg') || url.includes('wss://') && url.includes('discord')) {
-                wsCaptured = true;
-                console.log('[Hook] ✅ Discord Gateway captured!');
-                (window as any)._discordWs = ws;
-                (window as any)._gatewayUrl = url;
-                
-                // Send presence update after identification
-                setTimeout(() => {
-                  try {
-                    const payload = {
-                      op: 3,
-                      d: {
-                        since: Date.now(),
-                        activities: [{
-                          name: game,
-                          type: 0, // PLAYING
-                          application_id: applicationId,
-                          timestamps: { start: Date.now() },
-                          assets: { large_text: game },
-                          instance: true
-                        }],
-                        status: 'online',
-                        afk: false
-                      }
-                    };
-                    
-                    console.log('[Hook] Sending initial activity:', JSON.stringify(payload).substring(0, 100));
-                    ws.send(JSON.stringify(payload));
-                    activitySent = true;
-                    (window as any)._lastActivitySent = Date.now();
-                    resolve(true);
-                  } catch (e) {
-                    console.error('[Hook] Error sending activity:', e);
-                    resolve(false);
-                  }
-                }, 3000); // Wait for IDENTIFY/READY
-              }
-            });
-            
-            // Intercept outgoing messages to inject activity into PRESENCE_UPDATE
-            const originalSend = ws.send.bind(ws);
-            ws.send = function(data: any) {
-              try {
-                // Log all messages for debugging
-                if (typeof data === 'string') {
-                  try {
-                    const parsed = JSON.parse(data);
-                    if (parsed.op === 2 || parsed.op === 6) {
-                      console.log('[Hook] Client identifying/resuming, will inject activity soon');
-                    }
-                    if (parsed.op === 3) {
-                      console.log('[Hook] Intercepting PRESENCE_UPDATE');
-                      parsed.d.activities = [{
-                        name: game,
-                        type: 0,
-                        application_id: applicationId,
-                        timestamps: { start: Date.now() },
-                        assets: { large_text: game },
-                        instance: true
-                      }];
-                      data = JSON.stringify(parsed);
-                      activitySent = true;
-                      console.log('[Hook] ✅ Activity injected!');
-                    }
-                  } catch (e) {}
-                }
-              } catch (e) {}
-              return originalSend(data);
-            };
-            
-            // Monitor incoming messages for READY event
-            ws.addEventListener('message', (event) => {
-              try {
-                const data = JSON.parse(event.data);
-                if (data.op === 10) { // HELLO
-                  console.log('[Hook] Received HELLO from gateway');
-                }
-                if (data.t === 'READY') {
-                  console.log('[Hook] ✅ Client READY received!');
-                }
-                if (data.t === 'SESSIONS_REPLACE') {
-                  console.log('[Hook] Sessions replaced');
-                }
-              } catch (e) {}
-            });
-            
-            return ws;
-          };
-          
-          // Timeout fallback
-          setTimeout(() => {
-            if (!activitySent) {
-              console.warn(`[Hook] No activity sent in 8s, wsCaptured=${wsCaptured}`);
-              
-              // Try direct approach if we have WS
-              if ((window as any)._discordWs && (window as any)._discordWs.readyState === 1) {
+              // Send initial presence after READY
+              const sendPresence = () => {
                 try {
                   const payload = {
                     op: 3,
@@ -450,55 +397,168 @@ export async function startWebClientQuest(
                       since: Date.now(),
                       activities: [{
                         name: game,
-                        type: 0,
+                        type: 0, // PLAYING
                         application_id: applicationId,
                         timestamps: { start: Date.now() },
-                        instance: true
+                        assets: {
+                          large_text: game,
+                          large_image: `mp:assets/${applicationId}`
+                        },
+                        instance: true,
+                        buttons: [],
+                        metadata: {}
                       }],
-                      status: 'online'
+                      status: 'online',
+                      afk: false
                     }
                   };
-                  (window as any)._discordWs.send(JSON.stringify(payload));
-                  activitySent = true;
-                  console.log('[Hook] Fallback activity sent!');
+                  
+                  console.log(`[Activity WS] Sending PRESENCE_UPDATE for: ${game}`);
+                  ws.send(JSON.stringify(payload));
+                  
+                  (window as any)._lastPresenceSent = Date.now();
+                  (window as any)._presenceGame = game;
+                  methodsSuccessful++;
+                  console.log(`[Activity WS] ✅ Presence sent! Methods working: ${methodsSuccessful}`);
                 } catch (e) {
-                  console.error('[Hook] Fallback failed:', e);
+                  console.error(`[Activity WS] Error sending presence:`, e);
                 }
-              }
+              };
               
-              resolve(activitySent);
+              // Wait for identification then send presence
+              setTimeout(sendPresence, 2000);
+              setTimeout(sendPresence, 5000); // Retry
             }
-          }, 8000);
+          });
           
-        } catch (err) {
-          console.error('[Hook] Critical error:', err);
-          resolve(false);
-        }
+          // Intercept outgoing messages
+          const originalSend = ws.send.bind(ws);
+          ws.send = function(data: any) {
+            try {
+              if (typeof data === 'string') {
+                const parsed = JSON.parse(data);
+                
+                // If client is sending presence, inject our activity
+                if (parsed.op === 3) {
+                  console.log(`[Activity WS] Intercepting PRESENCE_UPDATE`);
+                  parsed.d.activities = [{
+                    name: game,
+                    type: 0,
+                    application_id: applicationId,
+                    timestamps: { start: Date.now() },
+                    assets: { large_text: game },
+                    instance: true
+                  }];
+                  data = JSON.stringify(parsed);
+                  methodsSuccessful++;
+                }
+                
+                // Log important events
+                if (parsed.op === 2) console.log(`[Activity WS] Client IDENTIFYING`);
+                if (parsed.op === 6) console.log(`[Activity WS] Client RESUMING`);
+              }
+            } catch (e) {}
+            return originalSend(data);
+          };
+          
+          // Monitor incoming
+          ws.addEventListener('message', (event) => {
+            try {
+              const data = JSON.parse(event.data);
+              if (data.op === 10) console.log(`[Activity WS] Got HELLO`);
+              if (data.t === 'READY') {
+                console.log(`[Activity WS] ✅ CLIENT READY!`);
+                (window as any)._clientReady = true;
+              }
+            } catch (e) {}
+          });
+          
+          return ws;
+        };
+        
+        console.log('[Activity] WebSocket hook installed');
+        
+        // --- METHOD 2: Try using Discord's internal APIs ---
+        const tryDiscordInternalAPI = () => {
+          try {
+            // Some extensions use this approach
+            if ((window as any).__DISCORD_TOKEN__) {
+              fetch('/api/v10/users/@me/activities', {
+                method: 'PUT',
+                headers: {
+                  'Authorization': (window as any).__DISCORD_TOKEN__,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  activities: [{
+                    name: game,
+                    type: 0,
+                    application_id: applicationId,
+                    timestamps: { start: Date.now() }
+                  }]
+                })
+              }).then(r => {
+                console.log(`[Activity API] PUT /activities status: ${r.status}`);
+                if (r.ok) methodsSuccessful++;
+              }).catch(e => {
+                console.warn(`[Activity API] Failed:`, e);
+              });
+            }
+          } catch (e) {
+            console.warn(`[Activity API] Error:`, e);
+          }
+        };
+        
+        // Try internal API after a delay
+        setTimeout(tryDiscordInternalAPI, 3000);
+        
+        // --- Resolution ---
+        const checkAndResolve = () => {
+          if (Date.now() - startedAt > MAX_WAIT) {
+            console.log(`[Activity] Timeout. Methods successful: ${methodsSuccessful}`);
+            resolve(methodsSuccessful > 0);
+            return;
+          }
+          
+          if (methodsSuccessful > 0) {
+            console.log(`[Activity] ✅ Activity methods working! Count: ${methodsSuccessful}`);
+            resolve(true);
+          } else {
+            setTimeout(checkAndResolve, 1000);
+          }
+        };
+        
+        setTimeout(checkAndResolve, 5000); // Initial check at 5s
+        
       });
-    }, { applicationId: appId, game: gameName, qId: questId });
+    }, { applicationId: appId, game: gameName });
     
-    console.log(`[WebClient] Initial activity injection result: ${activityInjected}`);
+    console.log(`[QUEST] Activity setup result: ${activitySetupResult}`);
     
+    // ============================================
+    // STEP 4: Start Progress Monitoring Loop
+    // ============================================
     session.status = 'running';
     session.lastActivityUpdate = new Date();
     
+    console.log('\n[QUEST] Step 4: Starting progress monitoring loop...\n');
+    
+    // Activity refresh interval (keep sending presence)
     const activityInterval = setInterval(async () => {
       if (!session.page || !session.browser) {
-        console.warn('[WebClient] Page or browser gone, clearing interval');
+        console.warn('[QUEST] Page/browser gone, clearing intervals');
         clearInterval(activityInterval);
+        if (session._apiInterval) clearInterval(session._apiInterval);
         return;
       }
       
       try {
-        // Method 1: Try direct WebSocket send
-        let sent = await session.page.evaluate(({ applicationId, game }) => {
-          return new Promise((resolve) => {
+        // Refresh activity via WebSocket
+        const sent = await session.page.evaluate(({ applicationId, game }) => {
+          return new Promise<boolean>((resolve) => {
             try {
-              // Check if we have a working WS connection
               const ws = (window as any)._discordWs;
-              if (ws && ws.readyState === 1) { // OPEN
-                console.log('[Interval] Sending via captured WS...');
-                
+              if (ws && ws.readyState === 1) {
                 const payload = {
                   op: 3,
                   d: {
@@ -518,93 +578,96 @@ export async function startWebClientQuest(
                 };
                 
                 ws.send(JSON.stringify(payload));
-                (window as any)._lastActivitySent = Date.now();
+                (window as any)._lastPresenceSent = Date.now();
                 resolve(true);
               } else {
-                console.log(`[Interval] WS not available (readyState: ${ws?.readyState})`);
                 resolve(false);
               }
             } catch (e) {
-              console.error('[Interval] Method 1 failed:', e);
               resolve(false);
             }
           });
         }, { applicationId: appId, game: gameName });
         
-        // Method 2: If WS failed, try triggering Discord's own presence update
-        if (!sent) {
-          console.log('[WebClient] Method 1 failed, trying Method 2 (trigger Discord UI)...');
-          sent = await session.page.evaluate(() => {
-            return new Promise((resolve) => {
-              try {
-                // Click on settings or trigger a DOM event that causes presence update
-                const settingsBtn = document.querySelector('div[class*="settings-"]');
-                if (settingsBtn) {
-                  settingsBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-                }
-                
-                // Dispatch custom events that Discord listens for
-                window.dispatchEvent(new Event('focus'));
-                window.dispatchEvent(new Event('blur'));
-                window.dispatchEvent(new Event('focus'));
-                
-                resolve(true);
-              } catch (e) {
-                resolve(false);
-              }
-            });
-          });
-        }
-        
-        // Method 3: Navigate to trigger presence refresh
-        if (!sent) {
-          console.log('[WebClient] Method 2 failed, trying Method 3 (page interaction)...');
-          try {
-            // Just evaluate something to keep page active
-            await session.page.evaluate(() => document.title);
-            sent = true;
-          } catch (e) {
-            console.error('[WebClient] All methods failed');
-          }
-        }
-        
         if (sent) {
           session.lastActivityUpdate = new Date();
-          const elapsed = Math.floor((Date.now() - session.startTime.getTime()) / 1000);
-          session.totalSeconds = elapsed;
-          
-          // DON'T auto-set discordConfirmed - that was FAKE!
-          // Only set it if we get REAL confirmation
-          console.log(`[WebClient] Activity sent via method - ${elapsed}s elapsed`);
+          session.totalSeconds = Math.floor((Date.now() - session.startTime.getTime()) / 1000);
         }
         
       } catch (err) {
-        console.error('[WebClient] Activity refresh error:', err);
+        console.error('[QUEST] Activity refresh error:', err);
       }
       
-    }, config?.activityUpdateInterval ?? 15000); // Changed from 25s to 15s for more frequent updates
+    }, 20000); // Every 20 seconds
     
-    (session as any)._interval = activityInterval;
+    (session as any)._activityInterval = activityInterval;
     
+    // ============================================
+    // STEP 5: REAL Discord API Progress Check
+    // THIS IS THE ONLY SOURCE OF TRUTH!
+    // ============================================
+    const apiCheckInterval = setInterval(async () => {
+      if (!session.browser) {
+        clearInterval(apiCheckInterval);
+        return;
+      }
+      
+      console.log(`\n[${new Date().toISOString()}] Checking REAL Discord API for progress...`);
+      
+      const result = await queryRealDiscordQuestProgress(token, questId);
+      
+      session.discordVerifiedProgress = result.progressValue;
+      session.discordQuestStatus = result.status;
+      session.lastDiscordCheck = new Date();
+      session.discordApiRaw = result.rawData;
+      
+      if (result.hasProgress && !session.realProgressDetected) {
+        // 🎉 FIRST TIME REAL PROGRESS DETECTED!
+        session.realProgressDetected = true;
+        session.firstProgressTime = new Date();
+        
+        console.log(`\n${'!'.repeat(60)}`);
+        console.log(`🎉🎉🎉 REAL PROGRESS DETECTED BY DISCORD! 🎉🎉🎉`);
+        console.log(`Progress Value: ${result.progressValue}`);
+        console.log(`Status: ${result.status}`);
+        console.log(`${'!'.repeat(60)}\n`);
+      }
+      
+      console.log(`[API CHECK] Result: hasProgress=${result.hasProgress}, value=${result.progressValue}, status=${result.status}`);
+      
+    }, 30000); // Every 30 seconds
+    
+    (session as any)._apiInterval = apiCheckInterval;
+    
+    // Auto-stop after 2 hours
     setTimeout(() => {
       cancelWebClientSession(sessionId);
     }, 2 * 60 * 60 * 1000);
     
-    console.log(`[WebClient] ✅ Session ${sessionId} running successfully!`);
-    console.log(`[WebClient] Method: Discord Web Client Activity Injection`);
-    console.log(`[WebClient] Activity will refresh every 25 seconds`);
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`[QUEST] ✅ Session ${sessionId} RUNNING!`);
+    console.log(`[QUEST] Method: Real Browser + Quest Page + API Verification`);
+    console.log(`[QUEST] Activity refresh: Every 20 seconds`);
+    console.log(`[QUEST] Discord API check: Every 30 seconds`);
+    console.log(`[QUEST] ⚠️ Will only report SUCCESS when Discord API shows >0%`);
+    console.log(`${'='.repeat(60)}\n`);
     
     return {
       success: true,
       sessionId,
-      message: `✅ Quest started via Discord Web Client!\n🎮 Playing: ${gameName}\n⏱️ Activity updates every 25 seconds\n📊 Session: ${sessionId}`,
+      message: `🚀 Quest Started!\n\n` +
+               `🎮 Game: ${gameName}\n` +
+               `📱 Method: Real Browser + Quest Page\n` +
+               `✅ Verification: Real Discord API polling\n\n` +
+               `⏳ Waiting for Discord to detect progress...\n` +
+               `📊 Check: /api/quest/discord-verify?questId=${questId}`,
       session
     };
     
   } catch (error: any) {
     session.status = 'error';
     session.error = error.message;
-    console.error('[WebClient] Error:', error.message);
+    console.error('[QUEST] Error:', error.message);
     
     if (session.browser) {
       try { await session.browser.close(); } catch {}
@@ -631,8 +694,11 @@ export async function cancelWebClientSession(sessionId: string): Promise<boolean
   if (!session) return false;
   
   try {
-    if ((session as any)._interval) {
-      clearInterval((session as any)._interval);
+    if ((session as any)._activityInterval) {
+      clearInterval((session as any)._activityInterval);
+    }
+    if ((session as any)._apiInterval) {
+      clearInterval((session as any)._apiInterval);
     }
     
     if (session.browser) {
@@ -640,11 +706,11 @@ export async function cancelWebClientSession(sessionId: string): Promise<boolean
     }
     
     activeSessions.delete(sessionId);
-    console.log(`[WebClient] Session ${sessionId} cancelled`);
+    console.log(`[QUEST] Session ${sessionId} cancelled`);
     return true;
     
   } catch (error) {
-    console.error('[WebClient] Error cancelling session:', error);
+    console.error('[QUEST] Error cancelling:', error);
     activeSessions.delete(sessionId);
     return false;
   }

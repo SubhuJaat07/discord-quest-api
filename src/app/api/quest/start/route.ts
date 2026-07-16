@@ -120,8 +120,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       sessionId: result.sessionId,
-      method: '🌐 Discord Web Client Injection',
-      message: `🌐 Starting ${gameInfo.gameName} via Discord's own client...`,
+      method: '🚀 Real Browser + Quest Page + API Verification',
+      message: `🚀 Starting ${gameInfo.gameName} with REAL Discord verification...`,
       
       questDetails: {
         questId,
@@ -131,34 +131,44 @@ export async function POST(request: NextRequest) {
       },
 
       whatHappensNext: [
-        '🌐 Launching Chromium browser...',
-        '📂 Opening discord.com/app...',
-        '🔐 Injecting your auth token...',
-        '🎣 Hooking into Discord WebSocket...',
-        '💉 Injecting game activity into presence...',
-        `⏱️ After ~${gameInfo.requiredMinutes} minutes → QUEST COMPLETE!`
+        '🚀 Launching REAL Chromium browser...',
+        '🔐 Authenticating with your token...',
+        '📱 Opening discord.com/quest-home (like extensions do)...',
+        '💉 Setting up activity injection methods...',
+        '📊 Polling Discord API every 30s for REAL progress...',
+        '✅ Only reporting SUCCESS when Discord confirms >0%!'
       ],
 
       technicalDetails: {
-        engine: 'Puppeteer + Discord Web Client',
-        method: 'WebSocket Hook + Activity Injection',
-        detectionType: 'Legitimate Presence Update',
-        stealthMode: true,
-        presenceInterval: '25 seconds',
-        whyThisWorks: "We use Discord's OWN client - not faking anything!"
+        engine: 'Puppeteer + Real Chromium',
+        method: 'Quest Page Open + WebSocket Hook + API Verification',
+        detectionType: 'Real Discord Quest API Response',
+        verificationMethod: 'GET /api/v10/users/@me/quests',
+        honestyLevel: '100% - No fake progress!',
+        activityInterval: '20 seconds',
+        apiCheckInterval: '30 seconds'
       },
 
       endpoints: {
         status: `/api/quest/status?sessionId=${result.sessionId}`,
-        statusV1: `/api/v1/quests/${questId}/status?session=${result.sessionId}`,
-        cancel: `/api/quest/cancel?sessionId=${result.sessionId}`,
-        cancelV1: `/api/v1/quests/${questId}/cancel?session=${result.sessionId}`
+        verifyDiscord: `/api/quest/discord-verify?questId=${questId}`, // NEW!
+        cancel: `/api/quest/cancel?sessionId=${result.sessionId}`
       },
 
-      warnings: [
-        '✅ This uses Discord real web client',
-        '✅ Activity appears as legitimate gameplay',
-        '⚠️ Keep this tab open for progress'
+      importantNotes: [
+        '✅ This version shows ONLY real Discord-verified progress',
+        '✅ Will show 0% until Discord actually detects activity',
+        '✅ Uses same approach as mobile browser extensions',
+        '⏳ May take 2-5 minutes for Discord to register first progress',
+        '📊 Check /api/quest/discord-verify for raw API data'
+      ],
+      
+      howThisIsDifferent: [
+        '❌ OLD: Fake internal timer (showed 44% when Discord had 0%)',
+        '✅ NEW: Real Discord API polling (shows 0% until Discord confirms)',
+        '✅ NEW: Opens quest-home page like extensions do',
+        '✅ NEW: Multiple activity injection methods',
+        '✅ NEW: Honest progress reporting only from Discord API'
       ]
     })
 
@@ -175,7 +185,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// GET - Check quest status
+// GET - Check quest status (WITH REAL DISCORD API VERIFICATION)
 export async function GET(request: NextRequest) {
   try {
     const sessionId = request.nextUrl.searchParams.get('sessionId')
@@ -204,13 +214,31 @@ export async function GET(request: NextRequest) {
 
     const elapsed = sessionStatus.totalSeconds
     const requiredSeconds = 900 // 15 minutes default
-    const progress = Math.min((elapsed / requiredSeconds) * 100, 99.9)
+    
+    // 🎯🎯🎯 CRITICAL: Show REAL Discord progress, not fake internal timer! 🎯🎯🎯
+    const realDiscordProgress = sessionStatus.discordVerifiedProgress ?? 0
+    const discordHasProgress = sessionStatus.realProgressDetected ?? false
+    
+    // Calculate display progress based on REAL data only
+    let displayPercent: number
+    let progressSource: string
+    
+    if (discordHasProgress && realDiscordProgress > 0) {
+      // Use ACTUAL Discord progress if available
+      displayPercent = Math.min((realDiscordProgress / requiredSeconds) * 100, 100)
+      progressSource = 'DISCORD_API_REAL'
+    } else {
+      // No real progress yet - show 0% honestly!
+      displayPercent = 0
+      progressSource = 'WAITING_FOR_DISCORD'
+    }
+    
     const remaining = Math.max(0, requiredSeconds - elapsed)
 
     return NextResponse.json({
       success: true,
       status: sessionStatus.status,
-      method: '🌐 Discord Web Client Injection',
+      method: '🚀 Real Browser + Quest Page + API Verification',
       
       quest: {
         questId: sessionStatus.questId,
@@ -218,33 +246,54 @@ export async function GET(request: NextRequest) {
         appId: sessionStatus.appId
       },
 
+      // 🎯 REAL PROGRESS DATA FROM DISCORD API
       progress: {
-        percent: Math.round(progress * 100) / 100,
+        percent: Math.round(displayPercent * 100) / 100,
+        source: progressSource, // IMPORTANT: Shows where data comes from
         elapsedSeconds: elapsed,
         elapsedFormatted: formatTime(elapsed),
         remainingSeconds: remaining,
         remainingFormatted: formatTime(remaining),
-        totalRequired: requiredSeconds
+        totalRequired: requiredSeconds,
+        
+        // 🔥 THE TRUTH - Real Discord verification
+        discordVerified: {
+          hasRealProgress: discordHasProgress,
+          progressValue: realDiscordProgress,
+          questStatus: sessionStatus.discordQuestStatus || 'unknown',
+          lastChecked: sessionStatus.lastDiscordCheck?.toISOString() || null,
+          firstDetectedAt: sessionStatus.firstProgressTime?.toISOString() || null
+        }
       },
 
       browser: {
         phase: sessionStatus.status,
         lastActivityUpdate: sessionStatus.lastActivityUpdate?.toISOString() || null,
-        discordConfirmed: sessionStatus.discordConfirmed || false
+        hasRealDiscordProgress: discordHasProgress // Renamed from discordConfirmed
       },
 
       timing: {
         startedAt: sessionStatus.startTime.toISOString(),
         currentTime: new Date().toISOString(),
-        totalElapsed: `${elapsed}s`
+        totalElapsed: `${elapsed}s`,
+        uptimeMinutes: Math.round(elapsed / 60)
       },
 
       actions: {
         cancel: `/api/quest/cancel?sessionId=${sessionId}`,
-        refresh: `/api/quest/status?sessionId=${sessionId}`
+        refresh: `/api/quest/status?sessionId=${sessionId}`,
+        verifyDiscord: `/api/quest/discord-verify?questId=${sessionStatus.questId}`
       },
 
-      message: getStatusMessage(sessionStatus.status, progress)
+      // HONEST status messages
+      message: getHonestStatusMessage(sessionStatus.status, displayPercent, discordHasProgress),
+      
+      warnings: !discordHasProgress && elapsed > 60 ? [
+        '⚠️ Session running but Discord shows 0%',
+        '⏳ This is normal - Discord may take time to register activity',
+        '💡 Keep session running and check again in 2-3 minutes',
+        '🔍 Use verifyDiscord endpoint for raw API data'
+      ] : undefined
     })
 
   } catch (error) {
@@ -351,21 +400,28 @@ function formatTime(totalSeconds: number): string {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
 }
 
-function getStatusMessage(status: string, progress: number): string {
+function getHonestStatusMessage(status: string, progress: number, hasRealProgress: boolean): string {
   switch (status) {
     case 'launching':
-      return '🌐 Launching browser...'
+      return '🚀 Launching Chromium browser...'
     case 'authenticating':
-      return '🔐 Authenticating with Discord...'
-    case 'setting_activity':
-      return '💉 Injecting activity into Discord client...'
+      return '🔐 Authenticating with Discord token...'
+    case 'opening_quest_page':
+      return '📱 Opening discord.com/quest-home (like extensions do)...'
+    case 'injecting_activity':
+      return '💉 Setting up activity injection methods...'
     case 'running':
-      if (progress < 20) return '🎮 Discord detecting gameplay...'
-      if (progress < 50) return '⏱️ Good progress...'
-      if (progress < 80) return '🎯 Almost there...'
-      return '🔄 Finalizing...'
+      if (!hasRealProgress) {
+        return '⏳ Session active - waiting for Discord to detect activity...'
+      }
+      if (progress < 20) return '✅ Discord detected gameplay! Progress starting...'
+      if (progress < 50) return '✅ Good progress on Discord side...'
+      if (progress < 80) return '✅ Almost there! Keep going...'
+      return '🎉 Finalizing! Quest almost complete!'
+    case 'verifying':
+      return '🔍 Verifying progress with Discord API...'
     case 'completed':
-      return '✅ Quest COMPLETE! Claim reward in Discord!'
+      return '🎉🎉🎉 QUEST COMPLETE! Claim reward in Discord! 🎉🎉🎉'
     case 'error':
       return '❌ Something went wrong'
     default:
