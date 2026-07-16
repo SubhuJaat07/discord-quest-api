@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { 
   isValidTokenFormat, 
   createSession, 
+  setSessionCookies,
   getSessionUser,
   getSessionToken 
 } from '@/lib/session'
@@ -102,6 +103,16 @@ export async function POST(request: NextRequest) {
       avatar: userInfo.avatar,
       id: userInfo.id
     })
+
+    // CRITICAL: Set cookies so token persists across restarts!
+    await setSessionCookies(sessionId, trimmedToken, {
+      username: userInfo.username,
+      discriminator: userInfo.discriminator,
+      avatar: userInfo.avatar,
+      id: userInfo.id
+    })
+
+    console.log(`[V1 AUTH] Session ${sessionId} created and cookies set for user ${userInfo.username}`)
 
     // Create API key
     const apiKeyData = createApiKey(sessionId, {

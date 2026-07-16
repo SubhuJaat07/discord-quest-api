@@ -184,25 +184,43 @@ export async function startWebClientQuest(
     });
     
     session.status = 'authenticating';
-    console.log('[WebClient] Injecting authentication...');
+    console.log('[WebClient] Injecting authentication via cookies...');
     
-    await page.evaluate((authToken) => {
-      localStorage.setItem('token', `"${authToken}"`);
+    // Method 1: Set Discord token via cookie (most reliable)
+    try {
+      await page.setCookie({
+        name: 'token',
+        value: `"${token}"`,
+        domain: '.discord.com',
+        path: '/',
+        httpOnly: false,
+        secure: true,
+        sameSite: 'None'
+      });
       
-      localStorage.setItem('super_properties', JSON.stringify({
-        os: "Windows",
-        browser: "Chrome",
-        release_channel: "stable",
-        client_version: "1.0.9012",
-        os_version: "10.0.19045",
-        os_arch: "x64",
-        system_locale: "en-US",
-        client_build_number: 233868,
-        client_event_source: null
-      }));
+      console.log('[WebClient] Token cookie set successfully');
+    } catch (cookieError) {
+      console.warn('[WebClient] Cookie setting failed, will use request interception:', cookieError);
+    }
+    
+    // Method 2: Inject token via evaluateOnNewDocument (runs before page scripts)
+    await page.evaluateOnNewDocument((authToken) => {
+      // Only set localStorage if it's available (page context)
+      if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+          window.localStorage.setItem('token', `"${authToken}"`);
+          console.log('[Auth] Token injected via localStorage');
+        } catch (e) {
+          console.warn('[Auth] localStorage not available:', e);
+        }
+      }
+      
+      // Also define it on window for fallback
+      (window as any).__DISCORD_TOKEN__ = authToken;
     }, token);
     
-    await page.reload({ waitUntil: 'networkidle2' });
+    console.log('[WebClient] Reloading page with auth...');
+    await page.reload({ waitUntil: 'networkidle2', timeout: 60000 });
     
     await page.waitForSelector('div[class*="app-"]', { timeout: 30000 }).catch(() => {
       console.log('[WebClient] App container not found, continuing anyway...');
