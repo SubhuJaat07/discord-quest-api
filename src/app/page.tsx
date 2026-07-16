@@ -93,6 +93,36 @@ export default function Home() {
     }
   }, [])
 
+  // 🍪 AUTO-LOGIN: Check for existing session on page load!
+  // This restores session from cookies - no need to re-enter token!
+  useEffect(() => {
+    const checkExistingSession = async () => {
+      try {
+        console.log('[Session] Checking for existing session...')
+        const response = await fetch('/api/token', { method: 'GET' })
+        const data = await response.json()
+        
+        if (data.loggedIn && data.user) {
+          console.log('[Session] ✅ Found existing session!', data.user.username)
+          setUserInfo(data.user)
+          setSuccessMessage(`✅ Welcome back, ${data.user.username}! Session restored.`)
+          
+          // Auto-fetch quests
+          await fetchQuests()
+        } else {
+          console.log('[Session] No existing session found')
+        }
+      } catch (err) {
+        console.error('[Session] Error checking session:', err)
+      }
+    }
+    
+    // Only check if we're in idle state (not already logged in)
+    if (appState === 'idle') {
+      checkExistingSession()
+    }
+  }, []) // Run once on mount
+
   // Poll quest status when active
   useEffect(() => {
     if (appState === 'quest_active' && sessionId) {

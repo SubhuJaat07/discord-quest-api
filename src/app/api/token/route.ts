@@ -82,18 +82,9 @@ export async function POST(request: NextRequest) {
       id: userInfo.id
     })
 
-    // 🍪 SET COOKIES - This is the KEY FIX!
-    // Cookies persist across redeployments!
-    await setSessionCookies(sessionId, trimmedToken, {
-      username: userInfo.username,
-      discriminator: userInfo.discriminator,
-      avatar: userInfo.avatar,
-      id: userInfo.id
-    })
+    console.log(`[TOKEN] User ${userInfo.username} logged in - creating response with cookies...`)
 
-    console.log(`[TOKEN] User ${userInfo.username} logged in - cookies set!`)
-
-    // Return success WITH cookies set
+    // Create response FIRST
     const response = NextResponse.json({
       success: true,
       sessionId,
@@ -117,6 +108,31 @@ export async function POST(request: NextRequest) {
         '🚀 Ready to start quests!'
       ]
     })
+
+    // 🍪🍪🍪 CRITICAL: Set cookies DIRECTLY on response object! 🍪🍪🍪
+    // This ensures cookies are actually sent to the browser!
+    
+    // Session ID cookie
+    response.cookies.set(SESSION_COOKIE_NAME, sessionId, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 86400 * 7, // 7 days
+      path: '/'
+    })
+    
+    // Token cookie  
+    response.cookies.set(TOKEN_COOKIE_NAME, trimmedToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 86400 * 7, // 7 days
+      path: '/'
+    })
+
+    console.log(`[TOKEN] ✅ Cookies set directly on response object!`)
+    console.log(`[TOKEN] - Session Cookie: ${SESSION_COOKIE_NAME}=${sessionId}`)
+    console.log(`[TOKEN] - Token Cookie: ${TOKEN_COOKIE_NAME}=${trimmedToken.substring(0, 20)}...`)
 
     return response
 
