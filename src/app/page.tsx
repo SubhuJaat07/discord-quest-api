@@ -413,7 +413,7 @@ export default function Home() {
             </div>
             <div>
               <h1 className="text-xl font-bold text-white">Discord Quest Tool</h1>
-              <p className="text-xs text-purple-300/70">Real Quest Completion Engine <span className="text-green-400">v1.0.0</span></p>
+              <p className="text-xs text-purple-300/70">Real Quest Completion Engine <span className="text-green-400">v1.0.1</span></p>
             </div>
           </div>
           

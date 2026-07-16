@@ -232,106 +232,146 @@ export async function startWebClientQuest(
     const activityInjected = await page.evaluate(async ({ applicationId, game, qId }) => {
       return new Promise((resolve) => {
         try {
-          const originalSend = WebSocket.prototype.send;
-          let wsInstance: WebSocket | null = null;
-          let activitySet = false;
+          console.log('[Hook] Starting WebSocket hook...');
+          let wsCaptured = false;
+          let activitySent = false;
+          let retryCount = 0;
           
+          // Method 1: Hook WebSocket constructor
           const OriginalWS = window.WebSocket;
           window.WebSocket = function(url: string, protocols?: string | string[]) {
+            console.log('[Hook] WebSocket created:', url);
             const ws = new OriginalWS(url, protocols);
             
             ws.addEventListener('open', () => {
               console.log('[Hook] WebSocket opened:', url);
-              if (url.includes('gateway.discord.gg') || url.includes('gateway')) {
-                wsInstance = ws;
-                console.log('[Hook] Captured Discord gateway!');
+              
+              // Check if this is Discord gateway
+              if (url.includes('gateway.discord.gg') || url.includes('wss://') && url.includes('discord')) {
+                wsCaptured = true;
+                console.log('[Hook] ✅ Discord Gateway captured!');
                 (window as any)._discordWs = ws;
+                (window as any)._gatewayUrl = url;
+                
+                // Send presence update after identification
+                setTimeout(() => {
+                  try {
+                    const payload = {
+                      op: 3,
+                      d: {
+                        since: Date.now(),
+                        activities: [{
+                          name: game,
+                          type: 0, // PLAYING
+                          application_id: applicationId,
+                          timestamps: { start: Date.now() },
+                          assets: { large_text: game },
+                          instance: true
+                        }],
+                        status: 'online',
+                        afk: false
+                      }
+                    };
+                    
+                    console.log('[Hook] Sending initial activity:', JSON.stringify(payload).substring(0, 100));
+                    ws.send(JSON.stringify(payload));
+                    activitySent = true;
+                    (window as any)._lastActivitySent = Date.now();
+                    resolve(true);
+                  } catch (e) {
+                    console.error('[Hook] Error sending activity:', e);
+                    resolve(false);
+                  }
+                }, 3000); // Wait for IDENTIFY/READY
               }
             });
             
-            const originalWSSend = ws.send.bind(ws);
+            // Intercept outgoing messages to inject activity into PRESENCE_UPDATE
+            const originalSend = ws.send.bind(ws);
             ws.send = function(data: any) {
               try {
-                const parsed = JSON.parse(data);
-                
-                if (parsed.op === 2 || parsed.op === 6) {
-                  console.log('[Hook] Client identifying/resuming');
-                  setTimeout(() => injectActivity(ws), 2000);
-                }
-                
-                if (parsed.op === 3) {
-                  console.log('[Hook] Intercepting presence update');
-                  parsed.d.activities = [{
-                    name: game,
-                    type: 0,
-                    application_id: applicationId,
-                    timestamps: { start: Date.now() },
-                    assets: {
-                      large_text: game,
-                      large_image: undefined
-                    },
-                    instance: true
-                  }] as any[];
-                  data = JSON.stringify(parsed);
-                  activitySet = true;
-                  console.log('[Hook] Activity injected into presence update!');
+                // Log all messages for debugging
+                if (typeof data === 'string') {
+                  try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.op === 2 || parsed.op === 6) {
+                      console.log('[Hook] Client identifying/resuming, will inject activity soon');
+                    }
+                    if (parsed.op === 3) {
+                      console.log('[Hook] Intercepting PRESENCE_UPDATE');
+                      parsed.d.activities = [{
+                        name: game,
+                        type: 0,
+                        application_id: applicationId,
+                        timestamps: { start: Date.now() },
+                        assets: { large_text: game },
+                        instance: true
+                      }];
+                      data = JSON.stringify(parsed);
+                      activitySent = true;
+                      console.log('[Hook] ✅ Activity injected!');
+                    }
+                  } catch (e) {}
                 }
               } catch (e) {}
-              
-              return originalWSSend(data);
+              return originalSend(data);
             };
+            
+            // Monitor incoming messages for READY event
+            ws.addEventListener('message', (event) => {
+              try {
+                const data = JSON.parse(event.data);
+                if (data.op === 10) { // HELLO
+                  console.log('[Hook] Received HELLO from gateway');
+                }
+                if (data.t === 'READY') {
+                  console.log('[Hook] ✅ Client READY received!');
+                }
+                if (data.t === 'SESSIONS_REPLACE') {
+                  console.log('[Hook] Sessions replaced');
+                }
+              } catch (e) {}
+            });
             
             return ws;
           };
           
-          function injectActivity(ws: WebSocket) {
-            if (!ws || ws.readyState !== WebSocket.OPEN) {
-              console.error('[Hook] WebSocket not ready');
-              resolve(false);
-              return;
-            }
-            
-            const presencePayload = {
-              op: 3,
-              d: {
-                since: Date.now(),
-                activities: [{
-                  name: game,
-                  type: 0,
-                  application_id: applicationId,
-                  timestamps: { start: Date.now() },
-                  assets: { large_text: game },
-                  instance: true
-                }],
-                status: 'online',
-                afk: false
-              }
-            };
-            
-            console.log('[Hook] Sending activity injection:', JSON.stringify(presencePayload));
-            ws.send(JSON.stringify(presencePayload));
-            
-            setTimeout(() => resolve(activitySet), 1000);
-          }
-          
+          // Timeout fallback
           setTimeout(() => {
-            if (!activitySet) {
-              console.log('[Hook] No WS captured yet, trying direct approach...');
+            if (!activitySent) {
+              console.warn(`[Hook] No activity sent in 8s, wsCaptured=${wsCaptured}`);
               
-              window.dispatchEvent(new CustomEvent('setActivity', {
-                detail: {
-                  name: game,
-                  application_id: applicationId,
-                  type: 'PLAYING'
+              // Try direct approach if we have WS
+              if ((window as any)._discordWs && (window as any)._discordWs.readyState === 1) {
+                try {
+                  const payload = {
+                    op: 3,
+                    d: {
+                      since: Date.now(),
+                      activities: [{
+                        name: game,
+                        type: 0,
+                        application_id: applicationId,
+                        timestamps: { start: Date.now() },
+                        instance: true
+                      }],
+                      status: 'online'
+                    }
+                  };
+                  (window as any)._discordWs.send(JSON.stringify(payload));
+                  activitySent = true;
+                  console.log('[Hook] Fallback activity sent!');
+                } catch (e) {
+                  console.error('[Hook] Fallback failed:', e);
                 }
-              }));
+              }
               
-              resolve(false);
+              resolve(activitySent);
             }
-          }, 5000);
+          }, 8000);
           
         } catch (err) {
-          console.error('[Hook] Error:', err);
+          console.error('[Hook] Critical error:', err);
           resolve(false);
         }
       });
