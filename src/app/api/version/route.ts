@@ -2,22 +2,24 @@ import { NextResponse } from 'next/server'
 
 // Version tracking - update this with each deployment
 const VERSION_INFO = {
-  version: "1.0.1",
-  buildNumber: "002",
+  version: "1.0.2",
+  buildNumber: "003",
   buildDate: new Date().toISOString(),
   features: [
     "Cookie-based auth (persistent sessions)",
     "WebClient activity injection via Puppeteer",
     "Improved WebSocket hooking with better logging",
     "Auto-login on page refresh",
-    "Fallback activity injection methods"
+    "Multi-method activity refresh (3 fallback methods)",
+    "15-second activity update interval"
   ],
   knownIssues: [
-    "Activity may not inject if Discord gateway changes (monitoring)"
+    "Discord may change gateway URL format (monitoring)"
   ],
   changelog: {
-    "1.0.0": "Initial release with WebClient activity injection + cookie persistence fix",
-    "1.0.1": "Improved WebSocket hooking - better logging, fallback methods, proper gateway detection"
+    "1.0.0": "Initial release + cookie persistence fix",
+    "1.0.1": "Improved WebSocket hooking + better logging",
+    "1.0.2": "Multi-method activity refresh (WS → UI events → page interaction)"
   }
 }
 

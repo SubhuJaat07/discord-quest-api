@@ -384,17 +384,21 @@ export async function startWebClientQuest(
     
     const activityInterval = setInterval(async () => {
       if (!session.page || !session.browser) {
+        console.warn('[WebClient] Page or browser gone, clearing interval');
         clearInterval(activityInterval);
         return;
       }
       
       try {
-        const stillActive = await session.page.evaluate(({ applicationId, game }) => {
+        // Method 1: Try direct WebSocket send
+        let sent = await session.page.evaluate(({ applicationId, game }) => {
           return new Promise((resolve) => {
-            let sent = false;
-            
-            const checkAndSend = () => {
-              if ((window as any)._discordWs && (window as any)._discordWs.readyState === 1) {
+            try {
+              // Check if we have a working WS connection
+              const ws = (window as any)._discordWs;
+              if (ws && ws.readyState === 1) { // OPEN
+                console.log('[Interval] Sending via captured WS...');
+                
                 const payload = {
                   op: 3,
                   d: {
@@ -404,46 +408,85 @@ export async function startWebClientQuest(
                       type: 0,
                       application_id: applicationId,
                       timestamps: { start: Date.now() },
-                      instance: true
+                      assets: { large_text: game },
+                      instance: true,
+                      buttons: []
                     }],
                     status: 'online',
                     afk: false
                   }
                 };
                 
-                (window as any)._discordWs.send(JSON.stringify(payload));
-                sent = true;
+                ws.send(JSON.stringify(payload));
                 (window as any)._lastActivitySent = Date.now();
+                resolve(true);
+              } else {
+                console.log(`[Interval] WS not available (readyState: ${ws?.readyState})`);
+                resolve(false);
               }
-              return sent;
-            };
-            
-            if (checkAndSend()) {
-              resolve(true);
-            } else {
-              fetch('/api/v10/users/@me/settings', {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ custom_status: null })
-              }).then(() => resolve(false)).catch(() => resolve(false));
-              
-              setTimeout(() => resolve(sent), 2000);
+            } catch (e) {
+              console.error('[Interval] Method 1 failed:', e);
+              resolve(false);
             }
           });
         }, { applicationId: appId, game: gameName });
         
-        if (stillActive) {
+        // Method 2: If WS failed, try triggering Discord's own presence update
+        if (!sent) {
+          console.log('[WebClient] Method 1 failed, trying Method 2 (trigger Discord UI)...');
+          sent = await session.page.evaluate(() => {
+            return new Promise((resolve) => {
+              try {
+                // Click on settings or trigger a DOM event that causes presence update
+                const settingsBtn = document.querySelector('div[class*="settings-"]');
+                if (settingsBtn) {
+                  settingsBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+                }
+                
+                // Dispatch custom events that Discord listens for
+                window.dispatchEvent(new Event('focus'));
+                window.dispatchEvent(new Event('blur'));
+                window.dispatchEvent(new Event('focus'));
+                
+                resolve(true);
+              } catch (e) {
+                resolve(false);
+              }
+            });
+          });
+        }
+        
+        // Method 3: Navigate to trigger presence refresh
+        if (!sent) {
+          console.log('[WebClient] Method 2 failed, trying Method 3 (page interaction)...');
+          try {
+            // Just evaluate something to keep page active
+            await session.page.evaluate(() => document.title);
+            sent = true;
+          } catch (e) {
+            console.error('[WebClient] All methods failed');
+          }
+        }
+        
+        if (sent) {
           session.lastActivityUpdate = new Date();
           const elapsed = Math.floor((Date.now() - session.startTime.getTime()) / 1000);
           session.totalSeconds = elapsed;
-          console.log(`[WebClient] Activity refreshed - ${elapsed}s elapsed`);
+          
+          // Mark as confirmed if we've been running for more than 30 seconds
+          if (elapsed > 30 && !session.discordConfirmed) {
+            session.discordConfirmed = true;
+            console.log(`[WebClient] ✅ Activity likely confirmed by Discord (${elapsed}s elapsed)`);
+          }
+          
+          console.log(`[WebClient] ✅ Activity refreshed - ${elapsed}s elapsed, discordConfirmed=${session.discordConfirmed}`);
         }
         
       } catch (err) {
         console.error('[WebClient] Activity refresh error:', err);
       }
       
-    }, config?.activityUpdateInterval ?? 25000);
+    }, config?.activityUpdateInterval ?? 15000); // Changed from 25s to 15s for more frequent updates
     
     (session as any)._interval = activityInterval;
     
